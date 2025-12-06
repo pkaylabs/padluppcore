@@ -10,6 +10,8 @@ from .models import (
 	TimerSession,
 	Evidence,
 	Notification,
+    Conversation,
+    Message,
 )
 
 
@@ -71,5 +73,18 @@ class EvidenceAdmin(admin.ModelAdmin):
 class NotificationAdmin(admin.ModelAdmin):
 	list_display = ('id', 'user', 'type', 'is_read', 'created_at')
 	search_fields = ('user__email', 'type')
+	list_filter = ('is_read',)
+
+
+@admin.register(Conversation)
+class ConversationAdmin(admin.ModelAdmin):
+	list_display = ('id', 'partnership', 'created_at')
+	search_fields = ('partnership__user_a__email', 'partnership__user_b__email')
+
+
+@admin.register(Message)
+class MessageAdmin(admin.ModelAdmin):
+	list_display = ('id', 'conversation', 'sender', 'text', 'is_read', 'created_at')
+	search_fields = ('sender__email', 'text')
 	list_filter = ('is_read',)
 

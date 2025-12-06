@@ -11,6 +11,8 @@ from .models import (
 	TimerSession,
 	Evidence,
 	Notification,
+    Conversation,
+    Message,
 )
 
 
@@ -179,4 +181,39 @@ class NotificationSerializer(serializers.ModelSerializer):
 			'updated_at',
 		]
 		read_only_fields = ['user']
+
+
+class ConversationSerializer(serializers.ModelSerializer):
+	last_message = serializers.SerializerMethodField()
+
+	class Meta:
+		model = Conversation
+		fields = [
+			'id',
+			'partnership',
+			'last_message',
+			'created_at',
+			'updated_at',
+		]
+
+	def get_last_message(self, obj):
+		message = obj.messages.order_by('-created_at').first()
+		return MessageSerializer(message).data if message else None
+
+
+class MessageSerializer(serializers.ModelSerializer):
+	sender = UserSerializer(read_only=True)
+
+	class Meta:
+		model = Message
+		fields = [
+			'id',
+			'conversation',
+			'sender',
+			'text',
+			'is_read',
+			'created_at',
+			'updated_at',
+		]
+		read_only_fields = ['sender', 'is_read']
 

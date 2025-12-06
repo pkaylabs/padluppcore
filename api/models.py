@@ -113,3 +113,14 @@ class Notification(TimeStampedModel):
 	type = models.CharField(max_length=50)
 	payload = models.JSONField(default=dict, blank=True)
 	is_read = models.BooleanField(default=False)
+
+
+class Conversation(TimeStampedModel):
+	partnership = models.OneToOneField(Partnership, on_delete=models.CASCADE, related_name='conversation')
+
+
+class Message(TimeStampedModel):
+	conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name='messages')
+	sender = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='messages')
+	text = models.TextField()
+	is_read = models.BooleanField(default=False)
