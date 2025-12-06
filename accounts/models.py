@@ -10,7 +10,7 @@ from .manager import AccountManager
 class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     '''Custom User model for the application'''
     email = models.EmailField(max_length=50, unique=True)
-    phone = models.CharField(max_length=15, unique=True)
+    phone = models.CharField(max_length=15, null=True, blank=True, unique=True)
     name = models.CharField(max_length=255)
     avatar = models.ImageField(upload_to='avatars/', blank=True, null=True)
 
