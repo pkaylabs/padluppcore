@@ -233,3 +233,10 @@ class WaitlisterSerializer(serializers.ModelSerializer):
 			'updated_at',
 		]
 
+	def validate_email(self, value):
+		# Normalize to lower-case to avoid case-sensitive duplicates
+		email = value.lower()
+		if Waitlister.objects.filter(email__iexact=email).exists():
+			raise serializers.ValidationError("This email is already on the waitlist.")
+		return value
+
