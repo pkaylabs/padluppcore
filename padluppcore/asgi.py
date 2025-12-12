@@ -17,19 +17,9 @@ application = ProtocolTypeRouter({
 	),
 })
 
+"""ASGI entrypoint for Django + Channels.
+
+This exposes a ProtocolTypeRouter so HTTP traffic is handled by the
+standard Django ASGI application and WebSocket traffic is routed through
+Channels using the URL patterns defined in ``api.routing``.
 """
-ASGI config for padluppcore project.
-
-It exposes the ASGI callable as a module-level variable named ``application``.
-
-For more information on this file, see
-https://docs.djangoproject.com/en/6.0/howto/deployment/asgi/
-"""
-
-import os
-
-from django.core.asgi import get_asgi_application
-
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'padluppcore.settings')
-
-application = get_asgi_application()

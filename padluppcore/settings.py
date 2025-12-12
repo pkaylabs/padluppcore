@@ -69,6 +69,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'padluppcore.wsgi.application'
+ASGI_APPLICATION = 'padluppcore.asgi.application'
 
 
 # Database
