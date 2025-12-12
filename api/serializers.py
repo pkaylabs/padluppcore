@@ -11,8 +11,9 @@ from .models import (
 	TimerSession,
 	Evidence,
 	Notification,
-    Conversation,
-    Message,
+	Conversation,
+	Message,
+	Waitlister,
 )
 
 
@@ -216,4 +217,19 @@ class MessageSerializer(serializers.ModelSerializer):
 			'updated_at',
 		]
 		read_only_fields = ['sender', 'is_read']
+
+
+class WaitlisterSerializer(serializers.ModelSerializer):
+	class Meta:
+		model = Waitlister
+		fields = [
+			'id',
+			'email',
+			'name',
+			'age',
+			'sex',
+			'country',
+			'created_at',
+			'updated_at',
+		]
 

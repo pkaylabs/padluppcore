@@ -12,6 +12,7 @@ from .models import (
 	Notification,
     Conversation,
     Message,
+	Waitlister,
 )
 
 
@@ -87,4 +88,10 @@ class MessageAdmin(admin.ModelAdmin):
 	list_display = ('id', 'conversation', 'sender', 'text', 'is_read', 'created_at')
 	search_fields = ('sender__email', 'text')
 	list_filter = ('is_read',)
+
+
+@admin.register(Waitlister)
+class WaitlisterAdmin(admin.ModelAdmin):
+	list_display = ('id', 'email', 'name', 'country', 'created_at')
+	search_fields = ('email', 'name', 'country')
 

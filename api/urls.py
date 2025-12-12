@@ -10,12 +10,13 @@ from .viewsets import (
 	GoalViewSet,
 	MatchViewSet,
 	NotificationViewSet,
-		MessageViewSet,
+	MessageViewSet,
 	OnboardingViewSet,
 	PartnershipViewSet,
 	SubTaskViewSet,
 	TaskViewSet,
 	TimerSessionViewSet,
+	WaitlistViewSet,
 )
 
 
@@ -32,6 +33,7 @@ router.register('evidences', EvidenceViewSet, basename='evidences')
 router.register('notifications', NotificationViewSet, basename='notifications')
 router.register('conversations', ConversationViewSet, basename='conversations')
 router.register('messages', MessageViewSet, basename='messages')
+router.register('waitlist', WaitlistViewSet, basename='waitlist')
 
 
 urlpatterns = [

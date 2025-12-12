@@ -6,7 +6,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from accounts.models import User
-from .models import Conversation, Evidence, Goal, Match, Notification, Partnership, Profile, SubTask, Task, TimerSession, Message
+from .models import Conversation, Evidence, Goal, Match, Notification, Partnership, Profile, SubTask, Task, TimerSession, Message, Waitlister
 from .serializers import (
 	ConversationSerializer,
 	EvidenceSerializer,
@@ -20,6 +20,7 @@ from .serializers import (
 	TimerSessionSerializer,
 	MessageSerializer,
 	UserSerializer,
+	WaitlisterSerializer,
 )
 
 
@@ -406,5 +407,37 @@ class NotificationViewSet(viewsets.ModelViewSet):
 		notification.is_read = True
 		notification.save(update_fields=['is_read'])
 		return Response(NotificationSerializer(notification).data)
+
+
+class WaitlistViewSet(viewsets.ModelViewSet):
+	"""Handle waitlist entries.
+
+	- Anyone can join the waitlist (unauthenticated POST).
+	- Only admins can list, retrieve, update or delete entries.
+	"""
+	serializer_class = WaitlisterSerializer
+
+	def get_queryset(self):
+		# Only admins should be able to see the waitlist.
+		user = self.request.user
+		if not user.is_authenticated or not user.is_staff:
+			return Waitlister.objects.none()
+		return Waitlister.objects.all().order_by('-created_at')
+
+	def get_permissions(self):
+		if self.action in ['create', 'join']:
+			return [permissions.AllowAny()]
+		return [permissions.IsAdminUser()]
+
+	@action(detail=False, methods=['post'])
+	def join(self, request):
+		"""Public endpoint for users to join the waitlist.
+
+		POST /api-v1/waitlist/join/
+		"""
+		serializer = self.get_serializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		instance = serializer.save()
+		return Response(self.get_serializer(instance).data, status=status.HTTP_201_CREATED)
 
 

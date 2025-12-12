@@ -124,3 +124,11 @@ class Message(TimeStampedModel):
 	sender = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='messages')
 	text = models.TextField()
 	is_read = models.BooleanField(default=False)
+
+
+class Waitlister(TimeStampedModel):
+	email = models.EmailField(unique=True)
+	name = models.CharField(max_length=255, blank=True)
+	age = models.IntegerField(null=True, blank=True)
+	sex = models.CharField(max_length=10, blank=True)
+	country = models.CharField(max_length=100, blank=True)
