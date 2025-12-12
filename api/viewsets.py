@@ -436,7 +436,14 @@ class WaitlistViewSet(viewsets.ModelViewSet):
 		POST /api-v1/waitlist/join/
 		"""
 		serializer = self.get_serializer(data=request.data)
-		serializer.is_valid(raise_exception=True)
+		if not serializer.is_valid():
+			# Flatten validation errors into a single detail message
+			# e.g. {"detail": "This email is already on the waitlist."}
+			errors = serializer.errors
+			first_key = next(iter(errors)) if errors else None
+			first_error = errors[first_key][0] if first_key is not None else "Invalid data."
+			return Response({"detail": str(first_error)}, status=status.HTTP_400_BAD_REQUEST)
+
 		instance = serializer.save()
 		return Response(self.get_serializer(instance).data, status=status.HTTP_201_CREATED)
 
