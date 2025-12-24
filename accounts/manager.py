@@ -8,8 +8,6 @@ class AccountManager(BaseUserManager):
         '''Create a regular user'''
         if not email:
             raise ValueError('The Email field must be set')
-        if not phone:
-            raise ValueError('The Phone field must be set')
         if not password:
             raise ValueError('The Password field must be set')
 
@@ -18,7 +16,6 @@ class AccountManager(BaseUserManager):
             email=email,
             name=name,
             phone=phone,
-            address=address,
             **kwargs
         )
         user.set_password(password)
@@ -41,7 +38,6 @@ class AccountManager(BaseUserManager):
             name=name,
             email=email,
             password=password,
-            address=address,
             **kwargs
         )
         user.is_staff = True

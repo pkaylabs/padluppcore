@@ -68,6 +68,30 @@ class Match(TimeStampedModel):
 		unique_together = ('from_user', 'to_user')
 
 
+class BuddyRequest(TimeStampedModel):
+	STATUS_PENDING = 'pending'
+	STATUS_ACCEPTED = 'accepted'
+	STATUS_REJECTED = 'rejected'
+
+	STATUS_CHOICES = [
+		(STATUS_PENDING, 'Pending'),
+		(STATUS_ACCEPTED, 'Accepted'),
+		(STATUS_REJECTED, 'Rejected'),
+	]
+
+	from_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='buddy_requests_sent')
+	to_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='buddy_requests_received')
+	status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+	responded_at = models.DateTimeField(null=True, blank=True)
+
+	class Meta:
+		unique_together = ('from_user', 'to_user')
+		indexes = [
+			models.Index(fields=['to_user', 'status']),
+			models.Index(fields=['from_user', 'status']),
+		]
+
+
 class Task(TimeStampedModel):
 	STATUS_PLANNED = 'planned'
 	STATUS_IN_PROGRESS = 'in_progress'

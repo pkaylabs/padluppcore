@@ -6,6 +6,7 @@ from .models import (
 	Goal,
 	Partnership,
 	Event,
+	BuddyRequest,
 	Match,
 	Task,
 	SubTask,
@@ -278,4 +279,52 @@ class EventxSerializer(serializers.ModelSerializer):
 			'updated_at',
 		]
 		read_only_fields = ['creator', 'participants', 'reminder_sent']
+
+
+class BuddyFinderProfileSerializer(ProfileSerializer):
+	"""Profile serializer used by buddy finder endpoint.
+
+	Adds a computed connection status from the current user to the profile's user.
+	"""
+	connection_status = serializers.SerializerMethodField()
+	buddy_request_id = serializers.SerializerMethodField()
+
+	class Meta(ProfileSerializer.Meta):
+		fields = ProfileSerializer.Meta.fields + ['connection_status', 'buddy_request_id']
+
+	def get_connection_status(self, obj):
+		pending_to_user_ids = self.context.get('pending_to_user_ids', set())
+		return 'pending' if obj.user_id in pending_to_user_ids else 'none'
+
+	def get_buddy_request_id(self, obj):
+		pending_request_id_by_to_user_id = self.context.get('pending_request_id_by_to_user_id', {})
+		return pending_request_id_by_to_user_id.get(obj.user_id)
+
+
+class BuddyConnectSerializer(serializers.Serializer):
+	to_user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
+
+
+class BuddyRequestSerializer(serializers.ModelSerializer):
+	from_user = UserSerializer(read_only=True)
+	to_user = UserSerializer(read_only=True)
+
+	class Meta:
+		model = BuddyRequest
+		fields = [
+			'id',
+			'from_user',
+			'to_user',
+			'status',
+			'responded_at',
+			'created_at',
+			'updated_at',
+		]
+		read_only_fields = fields
+
+
+class BuddyConnectionSerializer(serializers.Serializer):
+	"""Represents a buddy connection as the other user's profile."""
+	user = UserSerializer(read_only=True)
+	profile = ProfileSerializer(read_only=True)
 

@@ -5,6 +5,7 @@ from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
 from .viewsets import (
 	AuthViewSet,
+	BuddyViewSet,
 	ConversationViewSet,
 	EvidenceViewSet,
 	EventViewSet,
@@ -27,6 +28,7 @@ router.register('auth', AuthViewSet, basename='auth')
 router.register('goals', GoalViewSet, basename='goals')
 router.register('partnerships', PartnershipViewSet, basename='partnerships')
 router.register('matches', MatchViewSet, basename='matches')
+router.register('buddies', BuddyViewSet, basename='buddies')
 router.register('tasks', TaskViewSet, basename='tasks')
 router.register('subtasks', SubTaskViewSet, basename='subtasks')
 router.register('timer-sessions', TimerSessionViewSet, basename='timer-sessions')

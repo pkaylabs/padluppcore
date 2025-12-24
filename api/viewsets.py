@@ -6,8 +6,11 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from accounts.models import User
-from .models import Conversation, Evidence, Event, Goal, Match, Notification, Partnership, Profile, SubTask, Task, TimerSession, Message, Waitlister
+from .models import BuddyRequest, Conversation, Evidence, Event, Goal, Match, Notification, Partnership, Profile, SubTask, Task, TimerSession, Message, Waitlister
 from .serializers import (
+	BuddyConnectSerializer,
+	BuddyFinderProfileSerializer,
+	BuddyRequestSerializer,
 	ConversationSerializer,
 	EvidenceSerializer,
 	EventxSerializer,
@@ -23,6 +26,165 @@ from .serializers import (
 	UserSerializer,
 	WaitlisterSerializer,
 )
+
+
+class BuddyViewSet(viewsets.ViewSet):
+	permission_classes = [permissions.IsAuthenticated]
+
+	def _buddy_user_ids(self, user):
+		pairs = Partnership.objects.filter(
+			models.Q(user_a=user) | models.Q(user_b=user)
+		).values_list('user_a_id', 'user_b_id')
+		buddy_ids = set()
+		for a_id, b_id in pairs:
+			buddy_ids.add(a_id)
+			buddy_ids.add(b_id)
+		buddy_ids.discard(user.id)
+		return buddy_ids
+
+	@action(detail=False, methods=['get'], url_path='finder')
+	def finder(self, request):
+		"""List profiles that have similar experiences to the current user.
+
+		- Excludes existing buddy connections.
+		- Includes profiles with pending outgoing buddy requests.
+		- Adds `connection_status` = pending|none.
+		"""
+		user = request.user
+		profile, _ = Profile.objects.get_or_create(user=user)
+		buddy_user_ids = self._buddy_user_ids(user)
+
+		pending_requests = BuddyRequest.objects.filter(
+			from_user=user,
+			status=BuddyRequest.STATUS_PENDING,
+		)
+		pending_to_user_ids = set(pending_requests.values_list('to_user_id', flat=True))
+		pending_request_id_by_to_user_id = {
+			row['to_user_id']: row['id']
+			for row in pending_requests.values('id', 'to_user_id')
+		}
+
+		excluded_user_ids = set(buddy_user_ids) | {user.id}
+
+		# crude similarity: match on keywords from the user's experience
+		experience_text = (profile.experience or '').strip()
+		keywords = [w.strip(' ,.;:!"\'()[]{}').lower() for w in experience_text.split()]
+		keywords = [w for w in keywords if len(w) >= 4]
+		keywords = list(dict.fromkeys(keywords))[:6]
+
+		similarity_q = models.Q()
+		for word in keywords:
+			similarity_q |= models.Q(experience__icontains=word)
+
+		qs = Profile.objects.exclude(user_id__in=excluded_user_ids)
+		if similarity_q:
+			qs = qs.filter(similarity_q | models.Q(user_id__in=pending_to_user_ids))
+		else:
+			# If no experience yet, only show pending requests (if any)
+			qs = qs.filter(user_id__in=pending_to_user_ids)
+
+		qs = qs.distinct().order_by('-created_at')
+		page = None
+		if hasattr(self, 'paginate_queryset'):
+			page = self.paginate_queryset(qs)
+		serializer = BuddyFinderProfileSerializer(
+			page or qs,
+			many=True,
+			context={
+				'pending_to_user_ids': pending_to_user_ids,
+				'pending_request_id_by_to_user_id': pending_request_id_by_to_user_id,
+			},
+		)
+		if page is not None:
+			return self.get_paginated_response(serializer.data)
+		return Response(serializer.data)
+
+	@action(detail=False, methods=['post'], url_path='connect')
+	def connect(self, request):
+		"""Send a buddy connection request to another user."""
+		serializer = BuddyConnectSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		to_user = serializer.validated_data['to_user']
+		from_user = request.user
+
+		if to_user.id == from_user.id:
+			return Response({'detail': 'Cannot connect to yourself.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		# Block if already buddies (partnership exists)
+		user_a, user_b = sorted([from_user, to_user], key=lambda u: u.id)
+		if Partnership.objects.filter(user_a=user_a, user_b=user_b).exists():
+			return Response({'detail': 'You are already connected.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		# Upsert request (prevents duplicates via unique_together)
+		buddy_request, created = BuddyRequest.objects.get_or_create(
+			from_user=from_user,
+			to_user=to_user,
+			defaults={'status': BuddyRequest.STATUS_PENDING},
+		)
+		if not created:
+			if buddy_request.status == BuddyRequest.STATUS_PENDING:
+				return Response({'detail': 'Connection request already pending.'}, status=status.HTTP_400_BAD_REQUEST)
+			# If previously rejected/accepted, reset to pending
+			buddy_request.status = BuddyRequest.STATUS_PENDING
+			buddy_request.responded_at = None
+			buddy_request.save(update_fields=['status', 'responded_at', 'updated_at'])
+
+		return Response(BuddyRequestSerializer(buddy_request).data, status=status.HTTP_201_CREATED)
+
+	@action(detail=False, methods=['get'], url_path='invitations')
+	def invitations(self, request):
+		"""List pending buddy requests sent to the current user."""
+		qs = BuddyRequest.objects.filter(
+			to_user=request.user,
+			status=BuddyRequest.STATUS_PENDING,
+		).order_by('-created_at')
+		return Response(BuddyRequestSerializer(qs, many=True).data)
+
+	@action(detail=True, methods=['post'], url_path='accept')
+	def accept(self, request, pk=None):
+		"""Accept a buddy request (creates a Partnership)."""
+		buddy_request = BuddyRequest.objects.filter(
+			id=pk,
+			to_user=request.user,
+			status=BuddyRequest.STATUS_PENDING,
+		).first()
+		if not buddy_request:
+			return Response({'detail': 'Invitation not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+		buddy_request.status = BuddyRequest.STATUS_ACCEPTED
+		buddy_request.responded_at = models.functions.Now()
+		buddy_request.save(update_fields=['status', 'responded_at', 'updated_at'])
+
+		user_a, user_b = sorted([buddy_request.from_user, buddy_request.to_user], key=lambda u: u.id)
+		partnership, _ = Partnership.objects.get_or_create(user_a=user_a, user_b=user_b)
+		# Ensure a conversation exists (matches app behavior)
+		Conversation.objects.get_or_create(partnership=partnership)
+
+		return Response({'detail': 'Accepted.', 'partnership_id': partnership.id}, status=status.HTTP_200_OK)
+
+	@action(detail=True, methods=['post'], url_path='reject')
+	def reject(self, request, pk=None):
+		"""Reject a buddy request."""
+		buddy_request = BuddyRequest.objects.filter(
+			id=pk,
+			to_user=request.user,
+			status=BuddyRequest.STATUS_PENDING,
+		).first()
+		if not buddy_request:
+			return Response({'detail': 'Invitation not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+		buddy_request.status = BuddyRequest.STATUS_REJECTED
+		buddy_request.responded_at = models.functions.Now()
+		buddy_request.save(update_fields=['status', 'responded_at', 'updated_at'])
+		return Response({'detail': 'Rejected.'}, status=status.HTTP_200_OK)
+
+	@action(detail=False, methods=['get'], url_path='connections')
+	def connections(self, request):
+		"""Return current user's buddy connections as profiles."""
+		user = request.user
+		buddy_ids = self._buddy_user_ids(user)
+		qs = Profile.objects.filter(user_id__in=buddy_ids).order_by('-created_at')
+		return Response(ProfileSerializer(qs, many=True).data)
 
 
 class EventViewSet(viewsets.ModelViewSet):
