@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.db import models
 
+from padluppcore.utils.constants import StatusEnum
 from padluppcore.utils.models import TimeStampedModel
 
 
@@ -22,6 +23,7 @@ class Goal(TimeStampedModel):
 	description = models.TextField(blank=True)
 	start_date = models.DateField(null=True, blank=True)
 	target_date = models.DateField(null=True, blank=True)
+	status = models.CharField(max_length=20, default=StatusEnum.PENDING.value)
 	is_active = models.BooleanField(default=True)
 
 

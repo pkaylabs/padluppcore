@@ -54,6 +54,7 @@ class ProfileSerializer(serializers.ModelSerializer):
 
 
 class GoalSerializer(serializers.ModelSerializer):
+	user = UserSerializer(read_only=True)
 	class Meta:
 		model = Goal
 		fields = [
@@ -64,6 +65,7 @@ class GoalSerializer(serializers.ModelSerializer):
 			'start_date',
 			'target_date',
 			'is_active',
+			'status',
 			'created_at',
 			'updated_at',
 		]
