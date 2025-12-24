@@ -144,12 +144,12 @@ class OnboardingViewSet(viewsets.ViewSet):
 	def set_experience(self, request):
 		profile, _ = Profile.objects.get_or_create(user=request.user)
 		experience = request.data.get('experience')
-		subexperience = request.data.get('subexperience')
+		interests = request.data.get('interests')
 		if experience is not None:
 			profile.experience = experience
-		if subexperience is not None:
-			profile.subexperience = subexperience
-		profile.save(update_fields=['experience', 'subexperience'])
+		if interests is not None:
+			profile.interests = interests
+		profile.save(update_fields=['experience', 'interests'])
 		return Response(ProfileSerializer(profile).data)
 
 
