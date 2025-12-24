@@ -30,6 +30,7 @@ class EventViewSet(viewsets.ModelViewSet):
 	permission_classes = [permissions.IsAuthenticated]
 
 	def get_queryset(self):
+		'''This will get events where the user is either the creator or a participant.'''
 		user = self.request.user
 		return (
 			Event.objects.filter(models.Q(creator=user) | models.Q(participants=user))
@@ -38,21 +39,25 @@ class EventViewSet(viewsets.ModelViewSet):
 		)
 
 	def perform_create(self, serializer):
+		'''Create event with the current user as creator.'''
 		serializer.save(creator=self.request.user)
 
 	def perform_update(self, serializer):
+		'''Only the creator can update the event.'''
 		instance = self.get_object()
 		if instance.creator_id != self.request.user.id:
 			raise permissions.PermissionDenied('Only the creator can update this event.')
 		serializer.save()
 
 	def perform_destroy(self, instance):
+		'''Only the creator can delete the event.'''
 		if instance.creator_id != self.request.user.id:
 			raise permissions.PermissionDenied('Only the creator can delete this event.')
 		instance.delete()
 
 	@action(detail=False, methods=['get'], url_path='created')
 	def created(self, request):
+		'''Get events created by the user.'''
 		qs = Event.objects.filter(creator=request.user).order_by('-start_date', '-start_time', '-created_at')
 		page = self.paginate_queryset(qs)
 		serializer = self.get_serializer(page or qs, many=True)
@@ -62,6 +67,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
 	@action(detail=False, methods=['get'], url_path='participating')
 	def participating(self, request):
+		'''Get events where the user is a participant (not creator).'''
 		qs = (
 			Event.objects.filter(participants=request.user)
 			.distinct()
@@ -75,6 +81,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
 	@action(detail=True, methods=['post'], url_path='join')
 	def join(self, request, pk=None):
+		'''Join the event as a participant.'''
 		event = self.get_object()
 		event.participants.add(request.user)
 		return Response(self.get_serializer(event).data, status=status.HTTP_200_OK)
