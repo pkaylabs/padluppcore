@@ -7,6 +7,8 @@ from padluppcore.utils.models import TimeStampedModel
 class Profile(TimeStampedModel):
 	user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='profile')
 	bio = models.TextField(blank=True)
+	experience = models.TextField(blank=True)
+	subexperience = models.TextField(blank=True, null=True, help_text='additional experience added as comma separated values')
 	location = models.CharField(max_length=255, blank=True)
 	time_zone = models.CharField(max_length=100, blank=True)
 	focus_areas = models.JSONField(default=list, blank=True)

@@ -33,6 +33,7 @@ class UserSerializer(serializers.ModelSerializer):
 
 class ProfileSerializer(serializers.ModelSerializer):
 	user = UserSerializer(read_only=True)
+	subexperience = serializers.ListField(child=serializers.CharField())
 
 	class Meta:
 		model = Profile
@@ -41,6 +42,8 @@ class ProfileSerializer(serializers.ModelSerializer):
 			'user',
 			'bio',
 			'location',
+			'experience',
+			'subexperience',
 			'time_zone',
 			'focus_areas',
 			'availability',

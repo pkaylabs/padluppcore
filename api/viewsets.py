@@ -34,15 +34,17 @@ class OnboardingViewSet(viewsets.ViewSet):
 		name = request.data.get('name')
 		phone = request.data.get('phone')
 
-		if not email or not password or not name or not phone:
-			return Response({'detail': 'email, password, name and phone are required.'}, status=status.HTTP_400_BAD_REQUEST)
+		if not email or not password or not name:
+			return Response({'detail': 'email, password and name are required.'}, status=status.HTTP_400_BAD_REQUEST)
 
 		if User.objects.filter(email=email).exists():
 			return Response({'detail': 'Email already in use.'}, status=status.HTTP_400_BAD_REQUEST)
 
 		user = User.objects.create_user(email=email, password=password, name=name, phone=phone)
 		Profile.objects.get_or_create(user=user)
-		return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
+		# auto-login after registration
+		token = AuthToken.objects.create(user)[1]
+		return Response({'user': UserSerializer(user).data, 'token': token}, status=status.HTTP_201_CREATED)
 
 	@action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
 	def profile(self, request):
@@ -64,6 +66,28 @@ class OnboardingViewSet(viewsets.ViewSet):
 		serializer.is_valid(raise_exception=True)
 		serializer.save()
 		return Response(serializer.data)
+	
+	@action(detail=False, methods=['patch'], url_path='user-avatar', permission_classes=[permissions.IsAuthenticated])
+	def user_avatar(self, request):
+		user = request.user
+		avatar = request.data.get('avatar')
+		if not avatar:
+			return Response({'detail': 'avatar is required.'}, status=status.HTTP_400_BAD_REQUEST)
+		user.avatar = avatar
+		user.save(update_fields=['avatar'])
+		return Response(UserSerializer(user).data)
+	
+	@action(detail=False, methods=['post'], url_path='set-experience', permission_classes=[permissions.IsAuthenticated])
+	def set_experience(self, request):
+		profile, _ = Profile.objects.get_or_create(user=request.user)
+		experience = request.data.get('experience')
+		subexperience = request.data.get('subexperience')
+		if experience is not None:
+			profile.experience = experience
+		if subexperience is not None:
+			profile.subexperience = subexperience
+		profile.save(update_fields=['experience', 'subexperience'])
+		return Response(ProfileSerializer(profile).data)
 
 
 class AuthViewSet(viewsets.ViewSet):
