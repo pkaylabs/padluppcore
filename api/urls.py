@@ -7,6 +7,7 @@ from .viewsets import (
 	AuthViewSet,
 	ConversationViewSet,
 	EvidenceViewSet,
+	EventViewSet,
 	GoalViewSet,
 	MatchViewSet,
 	NotificationViewSet,
@@ -30,6 +31,7 @@ router.register('tasks', TaskViewSet, basename='tasks')
 router.register('subtasks', SubTaskViewSet, basename='subtasks')
 router.register('timer-sessions', TimerSessionViewSet, basename='timer-sessions')
 router.register('evidences', EvidenceViewSet, basename='evidences')
+router.register('events', EventViewSet, basename='events')
 router.register('notifications', NotificationViewSet, basename='notifications')
 router.register('conversations', ConversationViewSet, basename='conversations')
 router.register('messages', MessageViewSet, basename='messages')

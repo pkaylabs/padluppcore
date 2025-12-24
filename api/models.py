@@ -38,6 +38,20 @@ class Partnership(TimeStampedModel):
 		unique_together = ('user_a', 'user_b')
 
 
+class Event(TimeStampedModel):
+	title = models.CharField(max_length=255)
+	description = models.TextField(blank=True)
+	start_date = models.DateField()
+	start_time = models.TimeField()
+	end_date = models.DateField()
+	end_time = models.TimeField()
+	banner = models.ImageField(upload_to='event_banners/', null=True, blank=True)
+	event_link = models.URLField(blank=True)
+	reminder_sent = models.BooleanField(default=False)
+	creator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='events_created')
+	participants = models.ManyToManyField(settings.AUTH_USER_MODEL, related_name='events_participating', blank=True)
+
+
 class Match(TimeStampedModel):
 	LIKE = 'like'
 	PASS = 'pass'

@@ -5,6 +5,7 @@ from .models import (
 	Profile,
 	Goal,
 	Partnership,
+	Event,
 	Match,
 	Task,
 	SubTask,
@@ -244,4 +245,37 @@ class WaitlisterSerializer(serializers.ModelSerializer):
 		if Waitlister.objects.filter(email__iexact=email).exists():
 			raise serializers.ValidationError("This email is already on the waitlist.")
 		return value
+
+
+class EventxSerializer(serializers.ModelSerializer):
+	creator = UserSerializer(read_only=True)
+	participants = UserSerializer(read_only=True, many=True)
+	participants_ids = serializers.PrimaryKeyRelatedField(
+		queryset=User.objects.all(),
+		many=True,
+		required=False,
+		write_only=True,
+		source='participants',
+	)
+
+	class Meta:
+		model = Event
+		fields = [
+			'id',
+			'title',
+			'description',
+			'start_date',
+			'start_time',
+			'end_date',
+			'end_time',
+			'banner',
+			'event_link',
+			'reminder_sent',
+			'creator',
+			'participants',
+			'participants_ids',
+			'created_at',
+			'updated_at',
+		]
+		read_only_fields = ['creator', 'participants', 'reminder_sent']
 

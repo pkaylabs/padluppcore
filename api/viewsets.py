@@ -6,10 +6,11 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from accounts.models import User
-from .models import Conversation, Evidence, Goal, Match, Notification, Partnership, Profile, SubTask, Task, TimerSession, Message, Waitlister
+from .models import Conversation, Evidence, Event, Goal, Match, Notification, Partnership, Profile, SubTask, Task, TimerSession, Message, Waitlister
 from .serializers import (
 	ConversationSerializer,
 	EvidenceSerializer,
+	EventxSerializer,
 	GoalSerializer,
 	MatchSerializer,
 	NotificationSerializer,
@@ -22,6 +23,61 @@ from .serializers import (
 	UserSerializer,
 	WaitlisterSerializer,
 )
+
+
+class EventViewSet(viewsets.ModelViewSet):
+	serializer_class = EventxSerializer
+	permission_classes = [permissions.IsAuthenticated]
+
+	def get_queryset(self):
+		user = self.request.user
+		return (
+			Event.objects.filter(models.Q(creator=user) | models.Q(participants=user))
+			.distinct()
+			.order_by('-start_date', '-start_time', '-created_at')
+		)
+
+	def perform_create(self, serializer):
+		serializer.save(creator=self.request.user)
+
+	def perform_update(self, serializer):
+		instance = self.get_object()
+		if instance.creator_id != self.request.user.id:
+			raise permissions.PermissionDenied('Only the creator can update this event.')
+		serializer.save()
+
+	def perform_destroy(self, instance):
+		if instance.creator_id != self.request.user.id:
+			raise permissions.PermissionDenied('Only the creator can delete this event.')
+		instance.delete()
+
+	@action(detail=False, methods=['get'], url_path='created')
+	def created(self, request):
+		qs = Event.objects.filter(creator=request.user).order_by('-start_date', '-start_time', '-created_at')
+		page = self.paginate_queryset(qs)
+		serializer = self.get_serializer(page or qs, many=True)
+		if page is not None:
+			return self.get_paginated_response(serializer.data)
+		return Response(serializer.data)
+
+	@action(detail=False, methods=['get'], url_path='participating')
+	def participating(self, request):
+		qs = (
+			Event.objects.filter(participants=request.user)
+			.distinct()
+			.order_by('-start_date', '-start_time', '-created_at')
+		)
+		page = self.paginate_queryset(qs)
+		serializer = self.get_serializer(page or qs, many=True)
+		if page is not None:
+			return self.get_paginated_response(serializer.data)
+		return Response(serializer.data)
+
+	@action(detail=True, methods=['post'], url_path='join')
+	def join(self, request, pk=None):
+		event = self.get_object()
+		event.participants.add(request.user)
+		return Response(self.get_serializer(event).data, status=status.HTTP_200_OK)
 
 
 class OnboardingViewSet(viewsets.ViewSet):
