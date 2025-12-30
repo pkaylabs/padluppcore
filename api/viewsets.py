@@ -674,7 +674,8 @@ class WaitlistViewSet(viewsets.ModelViewSet):
 		return Waitlister.objects.all().order_by('-created_at')
 
 	def get_permissions(self):
-		if self.action in ['create', 'join']:
+		# Allow unauthenticated access to download-waitlist endpoint
+		if self.action in ['create', 'join', 'download_waitlist']:
 			return [permissions.AllowAny()]
 		return [permissions.IsAdminUser()]
 
@@ -695,5 +696,21 @@ class WaitlistViewSet(viewsets.ModelViewSet):
 
 		instance = serializer.save()
 		return Response(self.get_serializer(instance).data, status=status.HTTP_201_CREATED)
+
+	@action(detail=False, methods=['get'], url_path='download-waitlist', permission_classes=[permissions.AllowAny])
+	def download_waitlist(self, request):
+		"""Download all waitlisters as CSV (no auth required, for testing)."""
+		import csv
+		from django.http import HttpResponse
+		qs = Waitlister.objects.all().order_by('-created_at')
+		response = HttpResponse(content_type='text/csv')
+		response['Content-Disposition'] = 'attachment; filename="waitlist.csv"'
+		writer = csv.writer(response)
+		writer.writerow(['id', 'email', 'name', 'age', 'sex', 'country', 'created_at', 'updated_at'])
+		for w in qs:
+			writer.writerow([
+				w.id, w.email, w.name, w.age, w.sex, w.country, w.created_at, w.updated_at
+			])
+		return response
 
 
