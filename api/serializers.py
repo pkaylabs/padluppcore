@@ -1,4 +1,6 @@
+
 from rest_framework import serializers
+
 
 from accounts.models import User
 from .models import (
@@ -53,6 +55,16 @@ class ProfileSerializer(serializers.ModelSerializer):
 			'created_at',
 			'updated_at',
 		]
+
+class RegisterRequestSerializer(serializers.Serializer):
+	email = serializers.EmailField()
+	password = serializers.CharField()
+	name = serializers.CharField()
+	phone = serializers.CharField(required=False, allow_blank=True)
+
+class RegisterResponseSerializer(serializers.Serializer):
+	user = UserSerializer(read_only=True)  # Should match UserSerializer fields
+	token = serializers.CharField()
 
 
 class GoalSerializer(serializers.ModelSerializer):
@@ -328,3 +340,13 @@ class BuddyConnectionSerializer(serializers.Serializer):
 	user = UserSerializer(read_only=True)
 	profile = ProfileSerializer(read_only=True)
 
+class LoginRequestSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    password = serializers.CharField()
+
+class LoginResponseSerializer(serializers.Serializer):
+    user = UserSerializer(read_only=True)  # Should match UserSerializer fields
+    token = serializers.CharField()
+
+class LogoutResponseSerializer(serializers.Serializer):
+    detail = serializers.CharField()

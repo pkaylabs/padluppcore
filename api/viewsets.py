@@ -3,6 +3,7 @@ from django.db import models
 from knox.models import AuthToken
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
+from drf_spectacular.utils import extend_schema
 from rest_framework.response import Response
 
 from accounts.models import User
@@ -26,6 +27,7 @@ from .serializers import (
 	UserSerializer,
 	WaitlisterSerializer,
 )
+from .serializers import LoginRequestSerializer, LoginResponseSerializer, LogoutResponseSerializer
 
 
 class BuddyViewSet(viewsets.ViewSet):
@@ -252,6 +254,16 @@ class EventViewSet(viewsets.ModelViewSet):
 class OnboardingViewSet(viewsets.ViewSet):
 	permission_classes = [permissions.AllowAny]
 
+	from .serializers import RegisterRequestSerializer, RegisterResponseSerializer
+
+	@extend_schema(
+		request=RegisterRequestSerializer,
+		responses={
+			201: RegisterResponseSerializer,
+			400: RegisterResponseSerializer,
+		},
+		description="Register a new user. Returns user info and token."
+	)
 	@action(detail=False, methods=['post'])
 	def register(self, request):
 		email = request.data.get('email')
@@ -315,11 +327,21 @@ class OnboardingViewSet(viewsets.ViewSet):
 		return Response(ProfileSerializer(profile).data)
 
 
+
 class AuthViewSet(viewsets.ViewSet):
 	permission_classes = [permissions.AllowAny]
 
+	@extend_schema(
+		request=LoginRequestSerializer,
+		responses={
+			200: LoginResponseSerializer,
+			400: LoginResponseSerializer,
+		},
+		description="Login with email and password. Returns user info and token."
+	)
 	@action(detail=False, methods=['post'])
 	def login(self, request):
+		"""Login endpoint. Accepts email and password, returns user and token."""
 		email = request.data.get('email')
 		password = request.data.get('password')
 
