@@ -12,6 +12,12 @@ from .serializers import (
 	BuddyConnectSerializer,
 	BuddyFinderProfileSerializer,
 	BuddyRequestSerializer,
+	BuddyRequestActionResponseSerializer,
+	DetailResponseSerializer,
+	UserAvatarRequestSerializer,
+	ProfileExperienceRequestSerializer,
+	TaskRequestChangesRequestSerializer,
+	NotificationMarkAllReadResponseSerializer,
 	ConversationSerializer,
 	EvidenceSerializer,
 	EventxSerializer,
@@ -44,6 +50,10 @@ class BuddyViewSet(viewsets.ViewSet):
 		buddy_ids.discard(user.id)
 		return buddy_ids
 
+	@extend_schema(
+		responses={200: BuddyFinderProfileSerializer(many=True)},
+		description="List profiles with similar experience and pending requests."
+	)
 	@action(detail=False, methods=['get'], url_path='finder')
 	def finder(self, request):
 		"""List profiles that have similar experiences to the current user.
@@ -101,6 +111,15 @@ class BuddyViewSet(viewsets.ViewSet):
 			return self.get_paginated_response(serializer.data)
 		return Response(serializer.data)
 
+
+	@extend_schema(
+		request=BuddyConnectSerializer,
+		responses={
+			201: BuddyRequestSerializer,
+			400: DetailResponseSerializer,
+		},
+		description="Send a buddy connection request to another user."
+	)
 	@action(detail=False, methods=['post'], url_path='connect')
 	def connect(self, request):
 		"""Send a buddy connection request to another user."""
@@ -133,6 +152,11 @@ class BuddyViewSet(viewsets.ViewSet):
 
 		return Response(BuddyRequestSerializer(buddy_request).data, status=status.HTTP_201_CREATED)
 
+
+	@extend_schema(
+		responses={200: BuddyRequestSerializer(many=True)},
+		description="List pending buddy requests sent to the current user."
+	)
 	@action(detail=False, methods=['get'], url_path='invitations')
 	def invitations(self, request):
 		"""List pending buddy requests sent to the current user."""
@@ -142,6 +166,14 @@ class BuddyViewSet(viewsets.ViewSet):
 		).order_by('-created_at')
 		return Response(BuddyRequestSerializer(qs, many=True).data)
 
+
+	@extend_schema(
+		responses={
+			200: BuddyRequestActionResponseSerializer,
+			404: DetailResponseSerializer,
+		},
+		description="Accept a buddy request and create a partnership."
+	)
 	@action(detail=True, methods=['post'], url_path='accept')
 	def accept(self, request, pk=None):
 		"""Accept a buddy request (creates a Partnership)."""
@@ -164,6 +196,14 @@ class BuddyViewSet(viewsets.ViewSet):
 
 		return Response({'detail': 'Accepted.', 'partnership_id': partnership.id}, status=status.HTTP_200_OK)
 
+
+	@extend_schema(
+		responses={
+			200: BuddyRequestActionResponseSerializer,
+			404: DetailResponseSerializer,
+		},
+		description="Reject a buddy request."
+	)
 	@action(detail=True, methods=['post'], url_path='reject')
 	def reject(self, request, pk=None):
 		"""Reject a buddy request."""
@@ -180,6 +220,11 @@ class BuddyViewSet(viewsets.ViewSet):
 		buddy_request.save(update_fields=['status', 'responded_at', 'updated_at'])
 		return Response({'detail': 'Rejected.'}, status=status.HTTP_200_OK)
 
+
+	@extend_schema(
+		responses={200: ProfileSerializer(many=True)},
+		description="Return the current user's buddy connections as profiles."
+	)
 	@action(detail=False, methods=['get'], url_path='connections')
 	def connections(self, request):
 		"""Return current user's buddy connections as profiles."""
@@ -219,6 +264,10 @@ class EventViewSet(viewsets.ModelViewSet):
 			raise permissions.PermissionDenied('Only the creator can delete this event.')
 		instance.delete()
 
+	@extend_schema(
+		responses={200: EventxSerializer(many=True)},
+		description='Get events created by the user.'
+	)
 	@action(detail=False, methods=['get'], url_path='created')
 	def created(self, request):
 		'''Get events created by the user.'''
@@ -229,6 +278,10 @@ class EventViewSet(viewsets.ModelViewSet):
 			return self.get_paginated_response(serializer.data)
 		return Response(serializer.data)
 
+	@extend_schema(
+		responses={200: EventxSerializer(many=True)},
+		description='Get events where the user is a participant.'
+	)
 	@action(detail=False, methods=['get'], url_path='participating')
 	def participating(self, request):
 		'''Get events where the user is a participant (not creator).'''
@@ -243,6 +296,10 @@ class EventViewSet(viewsets.ModelViewSet):
 			return self.get_paginated_response(serializer.data)
 		return Response(serializer.data)
 
+	@extend_schema(
+		responses={200: EventxSerializer},
+		description='Join the event as a participant.'
+	)
 	@action(detail=True, methods=['post'], url_path='join')
 	def join(self, request, pk=None):
 		'''Join the event as a participant.'''
@@ -283,11 +340,20 @@ class OnboardingViewSet(viewsets.ViewSet):
 		token = AuthToken.objects.create(user)[1]
 		return Response({'user': UserSerializer(user).data, 'token': token}, status=status.HTTP_201_CREATED)
 
+	@extend_schema(
+		responses={200: ProfileSerializer},
+		description='Get current user profile.'
+	)
 	@action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
 	def profile(self, request):
 		profile, _ = Profile.objects.get_or_create(user=request.user)
 		return Response(ProfileSerializer(profile).data)
 
+	@extend_schema(
+		request=ProfileSerializer,
+		responses={200: ProfileSerializer},
+		description='Update entire profile.'
+	)
 	@profile.mapping.put
 	def update_profile(self, request):
 		profile, _ = Profile.objects.get_or_create(user=request.user)
@@ -296,6 +362,11 @@ class OnboardingViewSet(viewsets.ViewSet):
 		serializer.save()
 		return Response(serializer.data)
 
+	@extend_schema(
+		request=ProfileSerializer,
+		responses={200: ProfileSerializer},
+		description='Partially update profile.'
+	)
 	@profile.mapping.patch
 	def partial_update_profile(self, request):
 		profile, _ = Profile.objects.get_or_create(user=request.user)
@@ -304,6 +375,11 @@ class OnboardingViewSet(viewsets.ViewSet):
 		serializer.save()
 		return Response(serializer.data)
 	
+	@extend_schema(
+		request=UserAvatarRequestSerializer,
+		responses={200: UserSerializer, 400: DetailResponseSerializer},
+		description='Set avatar for current user.'
+	)
 	@action(detail=False, methods=['patch'], url_path='user-avatar', permission_classes=[permissions.IsAuthenticated])
 	def user_avatar(self, request):
 		user = request.user
@@ -314,6 +390,11 @@ class OnboardingViewSet(viewsets.ViewSet):
 		user.save(update_fields=['avatar'])
 		return Response(UserSerializer(user).data)
 	
+	@extend_schema(
+		request=ProfileExperienceRequestSerializer,
+		responses={200: ProfileSerializer},
+		description='Set experience and interests for current user profile.'
+	)
 	@action(detail=False, methods=['post'], url_path='set-experience', permission_classes=[permissions.IsAuthenticated])
 	def set_experience(self, request):
 		profile, _ = Profile.objects.get_or_create(user=request.user)
@@ -384,6 +465,10 @@ class MatchViewSet(viewsets.ModelViewSet):
 		# Only show matches initiated by the current user
 		return Match.objects.filter(from_user=self.request.user).order_by('-created_at')
 
+	@extend_schema(
+		responses={200: ProfileSerializer(many=True)},
+		description='Discover profiles not swiped or partnered yet.'
+	)
 	@action(detail=False, methods=['get'])
 	def discover(self, request):
 		user = request.user
@@ -462,6 +547,10 @@ class TaskViewSet(viewsets.ModelViewSet):
 				payload={'task_id': task.id, 'title': task.title},
 			)
 
+	@extend_schema(
+		responses={201: TimerSessionSerializer},
+		description='Start a timer session for a task.'
+	)
 	@action(detail=True, methods=['post'])
 	def start_timer(self, request, pk=None):
 		task = self.get_object()
@@ -473,6 +562,10 @@ class TaskViewSet(viewsets.ModelViewSet):
 			task.save(update_fields=['status'])
 		return Response(TimerSessionSerializer(session).data, status=status.HTTP_201_CREATED)
 
+	@extend_schema(
+		responses={200: TimerSessionSerializer, 400: DetailResponseSerializer},
+		description='Stop the active timer session for a task.'
+	)
 	@action(detail=True, methods=['post'])
 	def stop_timer(self, request, pk=None):
 		task = self.get_object()
@@ -483,6 +576,10 @@ class TaskViewSet(viewsets.ModelViewSet):
 		session.save(update_fields=['ended_at'])
 		return Response(TimerSessionSerializer(session).data)
 
+	@extend_schema(
+		responses={200: TaskSerializer, 400: DetailResponseSerializer},
+		description='Request review for a task.'
+	)
 	@action(detail=True, methods=['post'])
 	def request_review(self, request, pk=None):
 		task = self.get_object()
@@ -500,6 +597,10 @@ class TaskViewSet(viewsets.ModelViewSet):
 			)
 		return Response(TaskSerializer(task).data)
 
+	@extend_schema(
+		responses={200: TaskSerializer},
+		description='Mark task as not completed.'
+	)
 	@action(detail=True, methods=['post'])
 	def mark_not_completed(self, request, pk=None):
 		task = self.get_object()
@@ -507,6 +608,10 @@ class TaskViewSet(viewsets.ModelViewSet):
 		task.save(update_fields=['status'])
 		return Response(TaskSerializer(task).data)
 
+	@extend_schema(
+		responses={200: TaskSerializer, 400: DetailResponseSerializer, 403: DetailResponseSerializer},
+		description='Approve a task as partner.'
+	)
 	@action(detail=True, methods=['post'])
 	def approve(self, request, pk=None):
 		task = self.get_object()
@@ -538,6 +643,11 @@ class TaskViewSet(viewsets.ModelViewSet):
 		)
 		return Response(TaskSerializer(task).data)
 
+	@extend_schema(
+		request=TaskRequestChangesRequestSerializer,
+		responses={200: TaskSerializer, 400: DetailResponseSerializer, 403: DetailResponseSerializer},
+		description='Request changes for a task with optional comment.'
+	)
 	@action(detail=True, methods=['post'])
 	def request_changes(self, request, pk=None):
 		task = self.get_object()
@@ -645,6 +755,11 @@ class MessageViewSet(viewsets.ModelViewSet):
 		message = serializer.save(sender=user)
 		return message
 
+
+	@extend_schema(
+		responses={200: MessageSerializer, 400: DetailResponseSerializer, 403: DetailResponseSerializer},
+		description='Mark a message as read by the recipient.'
+	)
 	@action(detail=True, methods=['post'])
 	def mark_read(self, request, pk=None):
 		message = self.get_object()
@@ -666,12 +781,20 @@ class NotificationViewSet(viewsets.ModelViewSet):
 	def get_queryset(self):
 		return Notification.objects.filter(user=self.request.user).order_by('-created_at')
 
+	@extend_schema(
+		responses={200: NotificationMarkAllReadResponseSerializer},
+		description='Mark all notifications as read for current user.'
+	)
 	@action(detail=False, methods=['post'])
 	def mark_all_read(self, request):
 		qs = self.get_queryset().filter(is_read=False)
 		count = qs.update(is_read=True)
 		return Response({'marked_read': count})
 
+	@extend_schema(
+		responses={200: NotificationSerializer},
+		description='Mark a single notification as read.'
+	)
 	@action(detail=True, methods=['post'])
 	def mark_read(self, request, pk=None):
 		notification = self.get_object()
@@ -701,6 +824,12 @@ class WaitlistViewSet(viewsets.ModelViewSet):
 			return [permissions.AllowAny()]
 		return [permissions.IsAdminUser()]
 
+
+	@extend_schema(
+		request=WaitlisterSerializer,
+		responses={201: WaitlisterSerializer, 400: DetailResponseSerializer},
+		description='Public endpoint to join the waitlist.'
+	)
 	@action(detail=False, methods=['post'])
 	def join(self, request):
 		"""Public endpoint for users to join the waitlist.

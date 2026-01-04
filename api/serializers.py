@@ -1,5 +1,6 @@
 
 from rest_framework import serializers
+from drf_spectacular.utils import extend_schema_field
 
 
 from accounts.models import User
@@ -203,24 +204,6 @@ class NotificationSerializer(serializers.ModelSerializer):
 		read_only_fields = ['user']
 
 
-class ConversationSerializer(serializers.ModelSerializer):
-	last_message = serializers.SerializerMethodField()
-
-	class Meta:
-		model = Conversation
-		fields = [
-			'id',
-			'partnership',
-			'last_message',
-			'created_at',
-			'updated_at',
-		]
-
-	def get_last_message(self, obj):
-		message = obj.messages.order_by('-created_at').first()
-		return MessageSerializer(message).data if message else None
-
-
 class MessageSerializer(serializers.ModelSerializer):
 	sender = UserSerializer(read_only=True)
 
@@ -236,6 +219,25 @@ class MessageSerializer(serializers.ModelSerializer):
 			'updated_at',
 		]
 		read_only_fields = ['sender', 'is_read']
+
+
+class ConversationSerializer(serializers.ModelSerializer):
+	last_message = serializers.SerializerMethodField()
+
+	class Meta:
+		model = Conversation
+		fields = [
+			'id',
+			'partnership',
+			'last_message',
+			'created_at',
+			'updated_at',
+		]
+
+	@extend_schema_field(MessageSerializer)
+	def get_last_message(self, obj):
+		message = obj.messages.order_by('-created_at').first()
+		return MessageSerializer(message).data if message else None
 
 
 class WaitlisterSerializer(serializers.ModelSerializer):
@@ -304,10 +306,12 @@ class BuddyFinderProfileSerializer(ProfileSerializer):
 	class Meta(ProfileSerializer.Meta):
 		fields = ProfileSerializer.Meta.fields + ['connection_status', 'buddy_request_id']
 
+	@extend_schema_field(serializers.CharField())
 	def get_connection_status(self, obj):
 		pending_to_user_ids = self.context.get('pending_to_user_ids', set())
 		return 'pending' if obj.user_id in pending_to_user_ids else 'none'
 
+	@extend_schema_field(serializers.IntegerField(allow_null=True))
 	def get_buddy_request_id(self, obj):
 		pending_request_id_by_to_user_id = self.context.get('pending_request_id_by_to_user_id', {})
 		return pending_request_id_by_to_user_id.get(obj.user_id)
@@ -339,6 +343,42 @@ class BuddyConnectionSerializer(serializers.Serializer):
 	"""Represents a buddy connection as the other user's profile."""
 	user = UserSerializer(read_only=True)
 	profile = ProfileSerializer(read_only=True)
+
+
+class BuddyRequestActionResponseSerializer(serializers.Serializer):
+	"""Generic response for buddy request actions (accept/reject).
+
+	- `detail`: human-readable status message.
+	- `partnership_id`: present only for the accept action.
+	"""
+	detail = serializers.CharField()
+	partnership_id = serializers.IntegerField(required=False)
+
+
+class DetailResponseSerializer(serializers.Serializer):
+	"""Simple detail message wrapper used for error/success responses."""
+	detail = serializers.CharField()
+
+
+class UserAvatarRequestSerializer(serializers.Serializer):
+	"""Request body for updating the user's avatar."""
+	avatar = serializers.CharField()
+
+
+class ProfileExperienceRequestSerializer(serializers.Serializer):
+	"""Request body for updating profile experience and interests."""
+	experience = serializers.CharField(required=False, allow_blank=True)
+	interests = serializers.ListField(child=serializers.CharField(), required=False)
+
+
+class TaskRequestChangesRequestSerializer(serializers.Serializer):
+	"""Request body for task changes request comment."""
+	comment = serializers.CharField(required=False, allow_blank=True)
+
+
+class NotificationMarkAllReadResponseSerializer(serializers.Serializer):
+	"""Response body for mark_all_read endpoint."""
+	marked_read = serializers.IntegerField()
 
 class LoginRequestSerializer(serializers.Serializer):
     email = serializers.EmailField()
