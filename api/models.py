@@ -82,6 +82,7 @@ class BuddyRequest(TimeStampedModel):
 	from_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='buddy_requests_sent')
 	to_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='buddy_requests_received')
 	status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+	message = models.TextField(blank=True, default='')
 	responded_at = models.DateTimeField(null=True, blank=True)
 
 	class Meta:

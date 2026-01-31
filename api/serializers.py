@@ -319,6 +319,7 @@ class BuddyFinderProfileSerializer(ProfileSerializer):
 
 class BuddyConnectSerializer(serializers.Serializer):
 	to_user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
+	message = serializers.CharField(required=False, allow_blank=True, max_length=2000)
 
 
 class BuddyRequestSerializer(serializers.ModelSerializer):
@@ -332,6 +333,7 @@ class BuddyRequestSerializer(serializers.ModelSerializer):
 			'from_user',
 			'to_user',
 			'status',
+			'message',
 			'responded_at',
 			'created_at',
 			'updated_at',

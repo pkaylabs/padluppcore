@@ -31,9 +31,10 @@ class BuddyEndpointsTests(APITestCase):
 
 	def test_connect_and_invitations_accept_flow_creates_partnership(self):
 		connect_url = reverse('buddies-connect')
-		resp = self.client.post(connect_url, data={'to_user': self.other.id}, format='json')
+		resp = self.client.post(connect_url, data={'to_user': self.other.id, 'message': 'Hey, want to connect?'}, format='json')
 		self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
 		self.assertEqual(resp.data['status'], BuddyRequest.STATUS_PENDING)
+		self.assertEqual(resp.data['message'], 'Hey, want to connect?')
 
 		# Recipient sees it in invitations
 		self.client.force_authenticate(user=self.other)
@@ -41,6 +42,7 @@ class BuddyEndpointsTests(APITestCase):
 		inv = self.client.get(inv_url)
 		self.assertEqual(inv.status_code, status.HTTP_200_OK)
 		self.assertEqual(len(inv.data), 1)
+		self.assertEqual(inv.data[0]['message'], 'Hey, want to connect?')
 		request_id = inv.data[0]['id']
 
 		# Accept creates partnership

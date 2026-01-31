@@ -136,6 +136,7 @@ class BuddyViewSet(viewsets.ViewSet):
 		serializer = BuddyConnectSerializer(data=request.data)
 		serializer.is_valid(raise_exception=True)
 		to_user = serializer.validated_data['to_user']
+		message = (serializer.validated_data.get('message') or '').strip()
 		from_user = request.user
 
 		if to_user.id == from_user.id:
@@ -150,7 +151,7 @@ class BuddyViewSet(viewsets.ViewSet):
 		buddy_request, created = BuddyRequest.objects.get_or_create(
 			from_user=from_user,
 			to_user=to_user,
-			defaults={'status': BuddyRequest.STATUS_PENDING},
+			defaults={'status': BuddyRequest.STATUS_PENDING, 'message': message},
 		)
 		if not created:
 			if buddy_request.status == BuddyRequest.STATUS_PENDING:
@@ -158,7 +159,8 @@ class BuddyViewSet(viewsets.ViewSet):
 			# If previously rejected/accepted, reset to pending
 			buddy_request.status = BuddyRequest.STATUS_PENDING
 			buddy_request.responded_at = None
-			buddy_request.save(update_fields=['status', 'responded_at', 'updated_at'])
+			buddy_request.message = message
+			buddy_request.save(update_fields=['status', 'responded_at', 'message', 'updated_at'])
 
 		return Response(BuddyRequestSerializer(buddy_request).data, status=status.HTTP_201_CREATED)
 
