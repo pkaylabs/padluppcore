@@ -1,4 +1,7 @@
 from django.urls import reverse
+from unittest.mock import patch
+
+from django.conf import settings
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -101,3 +104,97 @@ class BuddyEndpointsTests(APITestCase):
 		self.assertEqual(resp.status_code, status.HTTP_200_OK)
 		returned_user_ids = {row['user']['id'] for row in resp.data}
 		self.assertEqual(returned_user_ids, {self.other.id})
+
+
+class GoogleAuthEndpointsTests(APITestCase):
+	def setUp(self):
+		# Ensure the setting is present for token audience verification.
+		settings.GOOGLE_OAUTH2_CLIENT_ID = 'test-client-id.apps.googleusercontent.com'
+
+	def test_google_signup_creates_user_profile_and_token(self):
+		url = reverse('auth-google-signup')
+
+		with patch('api.viewsets.google_id_token.verify_oauth2_token') as verify:
+			verify.return_value = {
+				'email': 'newuser@test.com',
+				'email_verified': True,
+				'name': 'New User',
+				'sub': 'google-sub-123',
+			}
+			resp = self.client.post(url, data={'id_token': 'dummy'}, format='json')
+
+		self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+		self.assertIn('token', resp.data)
+		self.assertEqual(resp.data['user']['email'], 'newuser@test.com')
+		self.assertTrue(resp.data['user']['email_verified'])
+		self.assertTrue(User.objects.filter(email='newuser@test.com').exists())
+		user = User.objects.get(email='newuser@test.com')
+		self.assertTrue(Profile.objects.filter(user=user).exists())
+
+	def test_google_signup_rejects_existing_email(self):
+		User.objects.create(email='exists@test.com', name='Exists')
+		url = reverse('auth-google-signup')
+
+		with patch('api.viewsets.google_id_token.verify_oauth2_token') as verify:
+			verify.return_value = {'email': 'exists@test.com', 'email_verified': True, 'name': 'Exists'}
+			resp = self.client.post(url, data={'id_token': 'dummy'}, format='json')
+
+		self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+	def test_google_signin_logs_in_existing_user(self):
+		user = User.objects.create(email='me@test.com', name='Me', email_verified=False)
+		Profile.objects.get_or_create(user=user)
+		url = reverse('auth-google-signin')
+
+		with patch('api.viewsets.google_id_token.verify_oauth2_token') as verify:
+			verify.return_value = {'email': 'me@test.com', 'email_verified': True, 'name': 'Me'}
+			resp = self.client.post(url, data={'id_token': 'dummy'}, format='json')
+
+		self.assertEqual(resp.status_code, status.HTTP_200_OK)
+		self.assertIn('token', resp.data)
+		user.refresh_from_db()
+		self.assertTrue(user.email_verified)
+
+	def test_google_signin_rejects_nonexistent_user(self):
+		url = reverse('auth-google-signin')
+
+		with patch('api.viewsets.google_id_token.verify_oauth2_token') as verify:
+			verify.return_value = {'email': 'missing@test.com', 'email_verified': True, 'name': 'Missing'}
+			resp = self.client.post(url, data={'id_token': 'dummy'}, format='json')
+
+		self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+	def test_google_auth_signs_up_when_missing(self):
+		url = reverse('auth-google-auth')
+
+		with patch('api.viewsets.google_id_token.verify_oauth2_token') as verify:
+			verify.return_value = {
+				'email': 'combo-new@test.com',
+				'email_verified': True,
+				'name': 'Combo New',
+			}
+			resp = self.client.post(url, data={'id_token': 'dummy'}, format='json')
+
+		self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+		self.assertTrue(User.objects.filter(email='combo-new@test.com').exists())
+		user = User.objects.get(email='combo-new@test.com')
+		self.assertTrue(Profile.objects.filter(user=user).exists())
+		self.assertIn('token', resp.data)
+
+	def test_google_auth_signs_in_when_exists(self):
+		user = User.objects.create(email='combo-exists@test.com', name='Combo Exists', email_verified=False)
+		Profile.objects.get_or_create(user=user)
+		url = reverse('auth-google-auth')
+
+		with patch('api.viewsets.google_id_token.verify_oauth2_token') as verify:
+			verify.return_value = {
+				'email': 'combo-exists@test.com',
+				'email_verified': True,
+				'name': 'Combo Exists',
+			}
+			resp = self.client.post(url, data={'id_token': 'dummy'}, format='json')
+
+		self.assertEqual(resp.status_code, status.HTTP_200_OK)
+		self.assertIn('token', resp.data)
+		user.refresh_from_db()
+		self.assertTrue(user.email_verified)

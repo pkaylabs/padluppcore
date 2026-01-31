@@ -1,10 +1,14 @@
 from django.contrib.auth import authenticate
+from django.conf import settings
 from django.db import models
 from knox.models import AuthToken
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from drf_spectacular.utils import extend_schema
 from rest_framework.response import Response
+
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
 
 from accounts.models import User
 from .models import BuddyRequest, Conversation, Evidence, Event, Goal, Match, Notification, Partnership, Profile, SubTask, Task, TimerSession, Message, Waitlister
@@ -33,7 +37,13 @@ from .serializers import (
 	UserSerializer,
 	WaitlisterSerializer,
 )
-from .serializers import LoginRequestSerializer, LoginResponseSerializer, LogoutResponseSerializer
+from .serializers import (
+	GoogleAuthRequestSerializer,
+	GoogleAuthResponseSerializer,
+	LoginRequestSerializer,
+	LoginResponseSerializer,
+	LogoutResponseSerializer,
+)
 
 
 class BuddyViewSet(viewsets.ViewSet):
@@ -412,6 +422,16 @@ class OnboardingViewSet(viewsets.ViewSet):
 class AuthViewSet(viewsets.ViewSet):
 	permission_classes = [permissions.AllowAny]
 
+	def _verify_google_id_token(self, token: str) -> dict:
+		client_id = getattr(settings, 'GOOGLE_OAUTH2_CLIENT_ID', '')
+		if not client_id:
+			raise RuntimeError('GOOGLE_OAUTH2_CLIENT_ID is not configured.')
+		return google_id_token.verify_oauth2_token(
+			token,
+			google_requests.Request(),
+			client_id,
+		)
+
 	@extend_schema(
 		request=LoginRequestSerializer,
 		responses={
@@ -435,6 +455,154 @@ class AuthViewSet(viewsets.ViewSet):
 
 		token = AuthToken.objects.create(user)[1]
 		return Response({'user': UserSerializer(user).data, 'token': token}, status=status.HTTP_200_OK)
+
+	@extend_schema(
+		request=GoogleAuthRequestSerializer,
+		responses={
+			200: GoogleAuthResponseSerializer,
+			400: DetailResponseSerializer,
+			500: DetailResponseSerializer,
+		},
+		description=(
+			"Google sign-in. Verifies a Google `id_token`, logs the user in, and returns a Knox token. "
+			"Fails if the user does not already exist."
+		),
+	)
+	@action(detail=False, methods=['post'], url_path='google-signin')
+	def google_signin(self, request):
+		id_token_str = request.data.get('id_token')
+		if not id_token_str:
+			return Response({'detail': 'id_token is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		try:
+			payload = self._verify_google_id_token(id_token_str)
+		except RuntimeError as exc:
+			return Response({'detail': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+		except ValueError:
+			return Response({'detail': 'Invalid Google token.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		email = (payload.get('email') or '').strip().lower()
+		if not email:
+			return Response({'detail': 'Google token missing email.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		user = User.objects.filter(email=email).first()
+		if not user:
+			return Response({'detail': 'No account found for this email.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		# mark verified if Google confirms it
+		if payload.get('email_verified') and not user.email_verified:
+			user.email_verified = True
+			user.save(update_fields=['email_verified'])
+
+		token = AuthToken.objects.create(user)[1]
+		return Response({'user': UserSerializer(user).data, 'token': token}, status=status.HTTP_200_OK)
+
+	@extend_schema(
+		request=GoogleAuthRequestSerializer,
+		responses={
+			201: GoogleAuthResponseSerializer,
+			400: DetailResponseSerializer,
+			500: DetailResponseSerializer,
+		},
+		description=(
+			"Google sign-up. Verifies a Google `id_token`, creates a user if the email is unused, "
+			"creates a Profile, and returns a Knox token."
+		),
+	)
+	@action(detail=False, methods=['post'], url_path='google-signup')
+	def google_signup(self, request):
+		id_token_str = request.data.get('id_token')
+		if not id_token_str:
+			return Response({'detail': 'id_token is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		try:
+			payload = self._verify_google_id_token(id_token_str)
+		except RuntimeError as exc:
+			return Response({'detail': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+		except ValueError:
+			return Response({'detail': 'Invalid Google token.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		email = (payload.get('email') or '').strip().lower()
+		if not email:
+			return Response({'detail': 'Google token missing email.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		if User.objects.filter(email=email).exists():
+			return Response({'detail': 'Email already in use.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		name = (payload.get('name') or '').strip()
+		if not name:
+			name = (request.data.get('name') or '').strip()
+		if not name:
+			# last resort fallback
+			name = email.split('@')[0]
+
+		phone = (request.data.get('phone') or '').strip() or None
+
+		user = User(email=email, name=name, phone=phone)
+		user.set_unusable_password()
+		if payload.get('email_verified'):
+			user.email_verified = True
+		user.save()
+		Profile.objects.get_or_create(user=user)
+
+		token = AuthToken.objects.create(user)[1]
+		return Response({'user': UserSerializer(user).data, 'token': token}, status=status.HTTP_201_CREATED)
+
+	@extend_schema(
+		request=GoogleAuthRequestSerializer,
+		responses={
+			200: GoogleAuthResponseSerializer,
+			201: GoogleAuthResponseSerializer,
+			400: DetailResponseSerializer,
+			500: DetailResponseSerializer,
+		},
+		description=(
+			"Google auth (signup-or-signin). Verifies a Google `id_token`. "
+			"If the user exists, returns 200 with a Knox token. Otherwise creates the user + Profile and returns 201."
+		),
+	)
+	@action(detail=False, methods=['post'], url_path='google-auth')
+	def google_auth(self, request):
+		id_token_str = request.data.get('id_token')
+		if not id_token_str:
+			return Response({'detail': 'id_token is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		try:
+			payload = self._verify_google_id_token(id_token_str)
+		except RuntimeError as exc:
+			return Response({'detail': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+		except ValueError:
+			return Response({'detail': 'Invalid Google token.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		email = (payload.get('email') or '').strip().lower()
+		if not email:
+			return Response({'detail': 'Google token missing email.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		user = User.objects.filter(email=email).first()
+		created = False
+		if not user:
+			name = (payload.get('name') or '').strip()
+			if not name:
+				name = (request.data.get('name') or '').strip()
+			if not name:
+				name = email.split('@')[0]
+
+			phone = (request.data.get('phone') or '').strip() or None
+			user = User(email=email, name=name, phone=phone)
+			user.set_unusable_password()
+			if payload.get('email_verified'):
+				user.email_verified = True
+			user.save()
+			Profile.objects.get_or_create(user=user)
+			created = True
+		else:
+			if payload.get('email_verified') and not user.email_verified:
+				user.email_verified = True
+				user.save(update_fields=['email_verified'])
+
+		token = AuthToken.objects.create(user)[1]
+		resp_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+		return Response({'user': UserSerializer(user).data, 'token': token}, status=resp_status)
 
 
 class GoalViewSet(viewsets.ModelViewSet):

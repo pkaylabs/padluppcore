@@ -388,5 +388,21 @@ class LoginResponseSerializer(serializers.Serializer):
     user = UserSerializer(read_only=True)  # Should match UserSerializer fields
     token = serializers.CharField()
 
+
+class GoogleAuthRequestSerializer(serializers.Serializer):
+	"""Request body for Google sign-in/sign-up.
+
+	Clients should send a Google `id_token` obtained via Google Sign-In.
+	"""
+	id_token = serializers.CharField()
+	# Optional overrides/extra fields (Google does not provide phone)
+	name = serializers.CharField(required=False, allow_blank=True)
+	phone = serializers.CharField(required=False, allow_blank=True)
+
+
+class GoogleAuthResponseSerializer(serializers.Serializer):
+	user = UserSerializer(read_only=True)
+	token = serializers.CharField()
+
 class LogoutResponseSerializer(serializers.Serializer):
     detail = serializers.CharField()
