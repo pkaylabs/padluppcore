@@ -1,5 +1,6 @@
 from django.contrib.auth import authenticate
 from django.conf import settings
+from django.db import IntegrityError
 from django.db import models
 from knox.models import AuthToken
 from rest_framework import permissions, status, viewsets
@@ -42,6 +43,7 @@ from .serializers import (
 	GoogleAuthResponseSerializer,
 	LoginRequestSerializer,
 	LoginResponseSerializer,
+	UserUpdateRequestSerializer,
 )
 
 
@@ -501,6 +503,51 @@ class AuthViewSet(viewsets.ViewSet):
 	def userprofile(self, request):
 		profile, _ = Profile.objects.get_or_create(user=request.user)
 		return Response(ProfileSerializer(profile).data)
+
+	@extend_schema(
+		request=UserUpdateRequestSerializer,
+		responses={
+			200: UserSerializer,
+			400: DetailResponseSerializer,
+		},
+		description='Patch update the current user.'
+	)
+	@action(detail=False, methods=['patch'], url_path='user', permission_classes=[permissions.IsAuthenticated])
+	def user(self, request):
+		serializer = UserUpdateRequestSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		data = serializer.validated_data
+		user = request.user
+
+		updated_fields = []
+		if 'name' in data:
+			user.name = data.get('name')
+			updated_fields.append('name')
+		if 'phone' in data:
+			phone = (data.get('phone') or '').strip()
+			user.phone = phone or None
+			updated_fields.append('phone')
+		if 'preferred_notification_email' in data:
+			val = (data.get('preferred_notification_email') or '').strip()
+			user.preferred_notification_email = val or None
+			updated_fields.append('preferred_notification_email')
+		if 'preferred_notification_phone' in data:
+			val = (data.get('preferred_notification_phone') or '').strip()
+			user.preferred_notification_phone = val or None
+			updated_fields.append('preferred_notification_phone')
+
+		if not updated_fields:
+			return Response({'detail': 'No fields provided.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		# Keep timestamps consistent with the rest of the codebase.
+		updated_fields.append('updated_at')
+		try:
+			user.save(update_fields=updated_fields)
+		except IntegrityError:
+			# Most likely: duplicate phone (unique constraint)
+			return Response({'detail': 'Phone already in use.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		return Response(UserSerializer(user).data)
 
 	@extend_schema(
 		request=GoogleAuthRequestSerializer,

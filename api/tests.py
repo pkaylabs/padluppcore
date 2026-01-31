@@ -122,6 +122,32 @@ class BuddyEndpointsTests(APITestCase):
 		self.assertEqual(resp.data['experience'], 'new exp')
 		self.assertEqual(resp.data['interests'], ['python', 'django'])
 
+	def test_update_user_patch(self):
+		url = reverse('auth-user')
+		resp = self.client.patch(
+			url,
+			data={
+				'name': 'New Name',
+				'preferred_notification_email': 'notify@test.com',
+				'preferred_notification_phone': '+15550001111',
+			},
+			format='json',
+		)
+		self.assertEqual(resp.status_code, status.HTTP_200_OK)
+		self.assertEqual(resp.data['name'], 'New Name')
+		self.assertEqual(resp.data['preferred_notification_email'], 'notify@test.com')
+		self.assertEqual(resp.data['preferred_notification_phone'], '+15550001111')
+
+	def test_update_user_duplicate_phone_rejected(self):
+		# Other user owns this phone
+		other = User(email='dup@test.com', phone='+19998887777', name='Dup')
+		other.set_password('pass1234')
+		other.save()
+
+		url = reverse('auth-user')
+		resp = self.client.patch(url, data={'phone': '+19998887777'}, format='json')
+		self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
 
 class GoogleAuthEndpointsTests(APITestCase):
 	def setUp(self):

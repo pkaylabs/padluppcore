@@ -35,7 +35,17 @@ class UserSerializer(serializers.ModelSerializer):
 			'avatar',
 			'phone_verified',
 			'email_verified',
+			'preferred_notification_email',
+			'preferred_notification_phone',
 		]
+
+
+class UserUpdateRequestSerializer(serializers.Serializer):
+	"""Request body for updating the current user (partial)."""
+	name = serializers.CharField(required=False, allow_blank=True)
+	phone = serializers.CharField(required=False, allow_blank=True)
+	preferred_notification_email = serializers.EmailField(required=False, allow_blank=True)
+	preferred_notification_phone = serializers.CharField(required=False, allow_blank=True)
 
 
 class CommaSeparatedListField(serializers.Field):
