@@ -107,6 +107,21 @@ class BuddyEndpointsTests(APITestCase):
 		returned_user_ids = {row['user']['id'] for row in resp.data}
 		self.assertEqual(returned_user_ids, {self.other.id})
 
+	def test_userprofile_returns_profile(self):
+		url = reverse('auth-userprofile')
+		resp = self.client.get(url)
+		self.assertEqual(resp.status_code, status.HTTP_200_OK)
+		# Endpoint returns ProfileSerializer payload
+		self.assertIn('user', resp.data)
+		self.assertEqual(resp.data['user']['id'], self.user.id)
+
+	def test_update_experience_updates_fields(self):
+		url = reverse('onboarding-update-experience')
+		resp = self.client.patch(url, data={'experience': 'new exp', 'interests': ['python', 'django']}, format='json')
+		self.assertEqual(resp.status_code, status.HTTP_200_OK)
+		self.assertEqual(resp.data['experience'], 'new exp')
+		self.assertEqual(resp.data['interests'], ['python', 'django'])
+
 
 class GoogleAuthEndpointsTests(APITestCase):
 	def setUp(self):

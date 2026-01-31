@@ -2,6 +2,8 @@
 from rest_framework import serializers
 from drf_spectacular.utils import extend_schema_field
 
+import json
+
 
 from accounts.models import User
 from .models import (
@@ -36,9 +38,57 @@ class UserSerializer(serializers.ModelSerializer):
 		]
 
 
+class CommaSeparatedListField(serializers.Field):
+	"""Represents a comma-separated string in the DB as a list in the API.
+
+	- DB: "a, b, c" (TextField)
+	- API: ["a", "b", "c"]
+
+	Also tolerates a JSON-encoded list string (legacy) like: '["a", "b"]'.
+	"""
+
+	def to_representation(self, value):
+		if value is None:
+			return []
+		if isinstance(value, list):
+			return [str(v).strip() for v in value if str(v).strip()]
+		if not isinstance(value, str):
+			return []
+
+		s = value.strip()
+		if not s:
+			return []
+		# Legacy tolerance: if a list was accidentally stored as JSON.
+		if s.startswith('[') and s.endswith(']'):
+			try:
+				decoded = json.loads(s)
+				if isinstance(decoded, list):
+					return [str(v).strip() for v in decoded if str(v).strip()]
+			except Exception:
+				pass
+		return [part.strip() for part in s.split(',') if part.strip()]
+
+	def to_internal_value(self, data):
+		if data is None:
+			return None
+		if isinstance(data, str):
+			# Allow passing comma-separated string directly.
+			return data
+		if isinstance(data, list):
+			items = []
+			for item in data:
+				if not isinstance(item, str):
+					raise serializers.ValidationError('Each interest must be a string.')
+				v = item.strip()
+				if v:
+					items.append(v)
+			return ','.join(items)
+		raise serializers.ValidationError('Interests must be a list of strings or a comma-separated string.')
+
+
 class ProfileSerializer(serializers.ModelSerializer):
 	user = UserSerializer(read_only=True)
-	interests = serializers.ListField(child=serializers.CharField())
+	interests = CommaSeparatedListField(required=False)
 
 	class Meta:
 		model = Profile
@@ -56,6 +106,12 @@ class ProfileSerializer(serializers.ModelSerializer):
 			'created_at',
 			'updated_at',
 		]
+
+
+class UserProfileResponseSerializer(serializers.Serializer):
+	"""Response body for endpoints returning both User and Profile."""
+	user = UserSerializer(read_only=True)
+	profile = ProfileSerializer(read_only=True)
 
 class RegisterRequestSerializer(serializers.Serializer):
 	email = serializers.EmailField()

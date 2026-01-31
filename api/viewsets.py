@@ -42,7 +42,6 @@ from .serializers import (
 	GoogleAuthResponseSerializer,
 	LoginRequestSerializer,
 	LoginResponseSerializer,
-	LogoutResponseSerializer,
 )
 
 
@@ -415,8 +414,44 @@ class OnboardingViewSet(viewsets.ViewSet):
 		if experience is not None:
 			profile.experience = experience
 		if interests is not None:
-			profile.interests = interests
+			# Stored as comma-separated text; API accepts list or string.
+			if isinstance(interests, list):
+				profile.interests = ','.join([str(i).strip() for i in interests if str(i).strip()])
+			elif isinstance(interests, str):
+				profile.interests = interests
+			else:
+				return Response({'detail': 'interests must be a list of strings or a comma-separated string.'}, status=status.HTTP_400_BAD_REQUEST)
 		profile.save(update_fields=['experience', 'interests'])
+		return Response(ProfileSerializer(profile).data)
+
+	@extend_schema(
+		request=ProfileExperienceRequestSerializer,
+		responses={200: ProfileSerializer, 400: DetailResponseSerializer},
+		description='Update experience and/or interests for current user profile.'
+	)
+	@action(detail=False, methods=['patch'], url_path='update-experience', permission_classes=[permissions.IsAuthenticated])
+	def update_experience(self, request):
+		profile, _ = Profile.objects.get_or_create(user=request.user)
+		experience = request.data.get('experience')
+		interests = request.data.get('interests')
+
+		if experience is None and interests is None:
+			return Response({'detail': 'Provide experience and/or interests.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		updated_fields = []
+		if experience is not None:
+			profile.experience = experience
+			updated_fields.append('experience')
+		if interests is not None:
+			if isinstance(interests, list):
+				profile.interests = ','.join([str(i).strip() for i in interests if str(i).strip()])
+			elif isinstance(interests, str):
+				profile.interests = interests
+			else:
+				return Response({'detail': 'interests must be a list of strings or a comma-separated string.'}, status=status.HTTP_400_BAD_REQUEST)
+			updated_fields.append('interests')
+
+		profile.save(update_fields=updated_fields)
 		return Response(ProfileSerializer(profile).data)
 
 
@@ -457,6 +492,15 @@ class AuthViewSet(viewsets.ViewSet):
 
 		token = AuthToken.objects.create(user)[1]
 		return Response({'user': UserSerializer(user).data, 'token': token}, status=status.HTTP_200_OK)
+
+	@extend_schema(
+		responses={200: ProfileSerializer},
+		description='Get current user profile.'
+	)
+	@action(detail=False, methods=['get'], url_path='userprofile', permission_classes=[permissions.IsAuthenticated])
+	def userprofile(self, request):
+		profile, _ = Profile.objects.get_or_create(user=request.user)
+		return Response(ProfileSerializer(profile).data)
 
 	@extend_schema(
 		request=GoogleAuthRequestSerializer,
