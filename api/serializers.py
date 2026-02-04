@@ -289,6 +289,7 @@ class MessageSerializer(serializers.ModelSerializer):
 
 class ConversationSerializer(serializers.ModelSerializer):
 	last_message = serializers.SerializerMethodField()
+	unread_count = serializers.SerializerMethodField()
 
 	class Meta:
 		model = Conversation
@@ -296,6 +297,7 @@ class ConversationSerializer(serializers.ModelSerializer):
 			'id',
 			'partnership',
 			'last_message',
+			'unread_count',
 			'created_at',
 			'updated_at',
 		]
@@ -304,6 +306,18 @@ class ConversationSerializer(serializers.ModelSerializer):
 	def get_last_message(self, obj):
 		message = obj.messages.order_by('-created_at').first()
 		return MessageSerializer(message).data if message else None
+
+	@extend_schema_field(serializers.IntegerField())
+	def get_unread_count(self, obj):
+		# Prefer queryset annotation if present.
+		annotated = getattr(obj, 'unread_count', None)
+		if annotated is not None:
+			return int(annotated)
+		request = self.context.get('request')
+		user = getattr(request, 'user', None)
+		if not user or not getattr(user, 'is_authenticated', False):
+			return 0
+		return obj.messages.filter(is_read=False).exclude(sender=user).count()
 
 
 class WaitlisterSerializer(serializers.ModelSerializer):

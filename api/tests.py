@@ -6,7 +6,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from accounts.models import User
-from api.models import BuddyRequest, Partnership, Profile
+from api.models import BuddyRequest, Partnership, Profile, Conversation, Message
 
 
 class BuddyEndpointsTests(APITestCase):
@@ -241,3 +241,43 @@ class GoogleAuthEndpointsTests(APITestCase):
 		self.assertIn('token', resp.data)
 		user.refresh_from_db()
 		self.assertTrue(user.email_verified)
+
+
+class ConversationEndpointsTests(APITestCase):
+	def _mk_user(self, *, email: str, name: str, password: str = 'pass1234'):
+		user = User(email=email, name=name)
+		user.set_password(password)
+		user.save()
+		Profile.objects.get_or_create(user=user)
+		return user
+
+	def setUp(self):
+		self.user_a = self._mk_user(email='a@test.com', name='A')
+		self.user_b = self._mk_user(email='b@test.com', name='B')
+		user_a, user_b = sorted([self.user_a, self.user_b], key=lambda u: u.id)
+		self.partnership = Partnership.objects.create(user_a=user_a, user_b=user_b)
+		self.conversation, _ = Conversation.objects.get_or_create(partnership=self.partnership)
+
+	def test_conversations_list_includes_unread_count(self):
+		# Two messages from B -> A, only one unread
+		Message.objects.create(conversation=self.conversation, sender=self.user_b, text='hello 1', is_read=False)
+		Message.objects.create(conversation=self.conversation, sender=self.user_b, text='hello 2', is_read=True)
+		# Message from A -> B should not count as unread for A
+		Message.objects.create(conversation=self.conversation, sender=self.user_a, text='reply', is_read=False)
+
+		self.client.force_authenticate(user=self.user_a)
+		url = reverse('conversations-list')
+		resp = self.client.get(url)
+		self.assertEqual(resp.status_code, status.HTTP_200_OK)
+		rows = resp.data.get('results', resp.data)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]['id'], self.conversation.id)
+		self.assertEqual(rows[0]['unread_count'], 1)
+
+		# For B, the unread should be the message sent by A
+		self.client.force_authenticate(user=self.user_b)
+		resp2 = self.client.get(url)
+		self.assertEqual(resp2.status_code, status.HTTP_200_OK)
+		rows2 = resp2.data.get('results', resp2.data)
+		self.assertEqual(len(rows2), 1)
+		self.assertEqual(rows2[0]['unread_count'], 1)

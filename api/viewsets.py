@@ -2,6 +2,8 @@ from django.contrib.auth import authenticate
 from django.conf import settings
 from django.db import IntegrityError
 from django.db import models
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 from knox.models import AuthToken
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
@@ -205,9 +207,43 @@ class BuddyViewSet(viewsets.ViewSet):
 		user_a, user_b = sorted([buddy_request.from_user, buddy_request.to_user], key=lambda u: u.id)
 		partnership, _ = Partnership.objects.get_or_create(user_a=user_a, user_b=user_b)
 		# Ensure a conversation exists (matches app behavior)
-		Conversation.objects.get_or_create(partnership=partnership)
+		conversation, _ = Conversation.objects.get_or_create(partnership=partnership)
+		# Notify both users' conversations websockets so the new conversation appears.
+		self._broadcast_conversation_update(conversation_id=conversation.id, user_ids=[user_a.id, user_b.id])
 
 		return Response({'detail': 'Accepted.', 'partnership_id': partnership.id}, status=status.HTTP_200_OK)
+
+	def _broadcast_conversation_update(self, *, conversation_id: int, user_ids: list[int]):
+		"""Best-effort realtime update for ws/conversations/."""
+		channel_layer = get_channel_layer()
+		if not channel_layer:
+			return
+		last_msg = (
+			Message.objects.select_related('sender')
+			.filter(conversation_id=conversation_id)
+			.order_by('-created_at')
+			.first()
+		)
+		last_message_payload = MessageSerializer(last_msg).data if last_msg else None
+		conv = Conversation.objects.get(id=conversation_id)
+		for uid in user_ids:
+			unread_count = (
+				Message.objects.filter(conversation_id=conversation_id, is_read=False)
+				.exclude(sender_id=uid)
+				.count()
+			)
+			payload = {
+				'id': conv.id,
+				'partnership': conv.partnership_id,
+				'last_message': last_message_payload,
+				'unread_count': unread_count,
+				'created_at': conv.created_at.isoformat() if conv.created_at else None,
+				'updated_at': conv.updated_at.isoformat() if conv.updated_at else None,
+			}
+			async_to_sync(channel_layer.group_send)(
+				f'conversations_user_{uid}',
+				{'type': 'conversations.update', 'payload': payload},
+			)
 
 
 	@extend_schema(
@@ -989,6 +1025,11 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
 		user = self.request.user
 		return Conversation.objects.filter(
 			models.Q(partnership__user_a=user) | models.Q(partnership__user_b=user)
+		).annotate(
+			unread_count=models.Count(
+				'messages',
+				filter=models.Q(messages__is_read=False) & ~models.Q(messages__sender=user),
+			)
 		).order_by('-created_at')
 
 
@@ -1014,7 +1055,41 @@ class MessageViewSet(viewsets.ModelViewSet):
 		if user not in [conversation.partnership.user_a, conversation.partnership.user_b]:
 			raise PermissionError('You are not part of this conversation.')
 		message = serializer.save(sender=user)
+		self._broadcast_conversation_update(conversation_id=conversation.id)
 		return message
+
+	def _broadcast_conversation_update(self, *, conversation_id: int):
+		"""Best-effort realtime update for ws/conversations/."""
+		channel_layer = get_channel_layer()
+		if not channel_layer:
+			return
+		conv = Conversation.objects.select_related('partnership').get(id=conversation_id)
+		user_ids = [conv.partnership.user_a_id, conv.partnership.user_b_id]
+		last_msg = (
+			Message.objects.select_related('sender')
+			.filter(conversation_id=conversation_id)
+			.order_by('-created_at')
+			.first()
+		)
+		last_message_payload = MessageSerializer(last_msg).data if last_msg else None
+		for uid in user_ids:
+			unread_count = (
+				Message.objects.filter(conversation_id=conversation_id, is_read=False)
+				.exclude(sender_id=uid)
+				.count()
+			)
+			payload = {
+				'id': conv.id,
+				'partnership': conv.partnership_id,
+				'last_message': last_message_payload,
+				'unread_count': unread_count,
+				'created_at': conv.created_at.isoformat() if conv.created_at else None,
+				'updated_at': conv.updated_at.isoformat() if conv.updated_at else None,
+			}
+			async_to_sync(channel_layer.group_send)(
+				f'conversations_user_{uid}',
+				{'type': 'conversations.update', 'payload': payload},
+			)
 
 
 	@extend_schema(
@@ -1032,6 +1107,7 @@ class MessageViewSet(viewsets.ModelViewSet):
 			return Response({'detail': 'You are not part of this conversation.'}, status=status.HTTP_403_FORBIDDEN)
 		message.is_read = True
 		message.save(update_fields=['is_read'])
+		self._broadcast_conversation_update(conversation_id=message.conversation_id)
 		return Response(MessageSerializer(message).data)
 
 
