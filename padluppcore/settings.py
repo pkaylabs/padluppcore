@@ -131,6 +131,10 @@ STATICFILES_DIRS = [
 MEDIA_URL = '/assets/'
 MEDIA_ROOT = BASE_DIR / "assets"
 
+# Optional: used to build absolute media URLs when there is no request context.
+# Example: https://api.padlupp.com
+PUBLIC_BASE_URL = os.getenv('PUBLIC_BASE_URL', '')
+
 # Django REST Framework Configuration
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [

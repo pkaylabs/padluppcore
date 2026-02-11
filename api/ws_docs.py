@@ -33,6 +33,8 @@ class WebSocketDocsView(APIView):
 			"  \"updated_at\": \"2026-02-04T12:40:00Z\"\n"
 			"}\n"
 			"```\n\n"
+			"Notes:\n"
+			"- Any `user.avatar` field returned by serializers is a full absolute URL (e.g. `https://api.padlupp.com/assets/avatars/...jpg`).\n\n"
 			"#### 2) Chat (per conversation)\n"
 			"- URL: `wss://api.padlupp.com/ws/chat/<conversation_id>/?token=<token>`\n\n"
 			"On connect the server sends history:\n"

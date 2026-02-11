@@ -1,12 +1,19 @@
 from django.urls import reverse
 from unittest.mock import patch
+import base64
+import tempfile
 
 from django.conf import settings
+from django.test import override_settings
 from rest_framework import status
 from rest_framework.test import APITestCase
+from rest_framework.test import APIRequestFactory
 
 from accounts.models import User
 from api.models import BuddyRequest, Partnership, Profile, Conversation, Message
+from api.serializers import UserSerializer, MessageSerializer
+from api.consumers import _ScopeRequest
+from django.core.files.uploadedfile import SimpleUploadedFile
 
 
 class BuddyEndpointsTests(APITestCase):
@@ -241,6 +248,65 @@ class GoogleAuthEndpointsTests(APITestCase):
 		self.assertIn('token', resp.data)
 		user.refresh_from_db()
 		self.assertTrue(user.email_verified)
+
+
+class AvatarAbsoluteUrlTests(APITestCase):
+	"""Tests for absolute avatar URLs in HTTP and websocket serializer payloads."""
+
+	def _mk_user_with_avatar(self, *, email: str = 'av@test.com', name: str = 'Av') -> User:
+		# 1x1 PNG
+		png_bytes = base64.b64decode(
+			'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/6XhYQAAAABJRU5ErkJggg=='
+		)
+		avatar_file = SimpleUploadedFile('avatar.png', png_bytes, content_type='image/png')
+		user = User.objects.create(email=email, name=name)
+		user.avatar = avatar_file
+		user.save()
+		return user
+
+	def test_user_serializer_avatar_is_absolute_with_request_context(self):
+		with tempfile.TemporaryDirectory() as tmpdir:
+			with override_settings(MEDIA_ROOT=tmpdir):
+				user = self._mk_user_with_avatar(email='abs1@test.com')
+				factory = APIRequestFactory()
+				request = factory.get('/')
+				data = UserSerializer(user, context={'request': request}).data
+				self.assertIsInstance(data.get('avatar'), str)
+				self.assertTrue(data['avatar'].startswith('http://testserver/'))
+				self.assertIn('/assets/avatars/', data['avatar'])
+
+	def test_user_serializer_avatar_uses_public_base_url_without_request(self):
+		with tempfile.TemporaryDirectory() as tmpdir:
+			with override_settings(MEDIA_ROOT=tmpdir, PUBLIC_BASE_URL='https://api.padlupp.com'):
+				user = self._mk_user_with_avatar(email='abs2@test.com')
+				data = UserSerializer(user, context={}).data
+				self.assertIsInstance(data.get('avatar'), str)
+				self.assertTrue(data['avatar'].startswith('https://api.padlupp.com/'))
+
+	def test_scope_request_builds_absolute_uri(self):
+		scope = {
+			'scheme': 'https',
+			'headers': [(b'host', b'example.com')],
+		}
+		req = _ScopeRequest(scope)
+		self.assertEqual(req.build_absolute_uri('/assets/avatars/x.png'), 'https://example.com/assets/avatars/x.png')
+		self.assertEqual(req.build_absolute_uri('https://cdn.example.com/a.png'), 'https://cdn.example.com/a.png')
+
+	def test_message_serializer_sender_avatar_is_absolute_in_websocket_context(self):
+		with tempfile.TemporaryDirectory() as tmpdir:
+			with override_settings(MEDIA_ROOT=tmpdir):
+				sender = self._mk_user_with_avatar(email='sender@test.com')
+				# Create minimal conversation graph
+				other = User.objects.create(email='other2@test.com', name='Other2')
+				user_a, user_b = sorted([sender, other], key=lambda u: u.id)
+				partnership = Partnership.objects.create(user_a=user_a, user_b=user_b)
+				conv = Conversation.objects.create(partnership=partnership)
+				msg = Message.objects.create(conversation=conv, sender=sender, text='hi')
+
+				scope = {'scheme': 'https', 'headers': [(b'host', b'ws.example.com')]}
+				req = _ScopeRequest(scope)
+				payload = MessageSerializer(msg, context={'request': req}).data
+				self.assertTrue(payload['sender']['avatar'].startswith('https://ws.example.com/'))
 
 
 class ConversationEndpointsTests(APITestCase):

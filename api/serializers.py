@@ -2,6 +2,10 @@
 from rest_framework import serializers
 from drf_spectacular.utils import extend_schema_field
 
+from django.conf import settings
+
+from urllib.parse import urljoin
+
 import json
 
 
@@ -25,6 +29,25 @@ from .models import (
 
 
 class UserSerializer(serializers.ModelSerializer):
+	avatar = serializers.SerializerMethodField()
+
+	def get_avatar(self, obj):
+		if not getattr(obj, 'avatar', None):
+			return None
+		try:
+			url = obj.avatar.url
+		except Exception:
+			return None
+		if not url:
+			return None
+		request = self.context.get('request')
+		if request is not None:
+			return request.build_absolute_uri(url)
+		base_url = getattr(settings, 'PUBLIC_BASE_URL', '') or getattr(settings, 'SITE_URL', '')
+		if base_url:
+			return urljoin(base_url.rstrip('/') + '/', url.lstrip('/'))
+		return url
+
 	class Meta:
 		model = User
 		fields = [
@@ -305,7 +328,7 @@ class ConversationSerializer(serializers.ModelSerializer):
 	@extend_schema_field(MessageSerializer)
 	def get_last_message(self, obj):
 		message = obj.messages.order_by('-created_at').first()
-		return MessageSerializer(message).data if message else None
+		return MessageSerializer(message, context=self.context).data if message else None
 
 	@extend_schema_field(serializers.IntegerField())
 	def get_unread_count(self, obj):
@@ -444,7 +467,7 @@ class DetailResponseSerializer(serializers.Serializer):
 
 class UserAvatarRequestSerializer(serializers.Serializer):
 	"""Request body for updating the user's avatar."""
-	avatar = serializers.CharField()
+	avatar = serializers.ImageField()
 
 
 class ProfileExperienceRequestSerializer(serializers.Serializer):

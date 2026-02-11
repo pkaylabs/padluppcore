@@ -1,6 +1,8 @@
 import json
 from urllib.parse import parse_qs
 
+from django.conf import settings
+
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.core.cache import cache
@@ -10,6 +12,43 @@ from knox.auth import TokenAuthentication
 from accounts.models import User
 from .models import Conversation, Message
 from .serializers import MessageSerializer
+
+
+class _ScopeRequest:
+    """Minimal request-like object for DRF serializers in websockets.
+
+    Provides build_absolute_uri() using ASGI scope (scheme + Host header).
+    """
+
+    def __init__(self, scope: dict):
+        self._scope = scope or {}
+
+    def build_absolute_uri(self, location: str) -> str:
+        if not location:
+            return location
+        if isinstance(location, str) and (location.startswith('http://') or location.startswith('https://')):
+            return location
+
+        scheme = self._scope.get('scheme') or 'http'
+        headers = {k.decode().lower(): v.decode() for k, v in (self._scope.get('headers') or [])}
+        host = headers.get('host')
+        if not host:
+            server = self._scope.get('server')
+            if server and isinstance(server, (list, tuple)) and len(server) >= 2:
+                host, port = server[0], server[1]
+                if port and ((scheme == 'http' and int(port) != 80) or (scheme == 'https' and int(port) != 443)):
+                    host = f"{host}:{port}"
+                else:
+                    host = str(host)
+
+        # Fallback for cases where scope doesn't have host info.
+        if not host:
+            base = getattr(settings, 'PUBLIC_BASE_URL', '') or getattr(settings, 'SITE_URL', '')
+            if base:
+                return base.rstrip('/') + '/' + location.lstrip('/')
+            return location
+
+        return f"{scheme}://{host}".rstrip('/') + '/' + location.lstrip('/')
 
 
 class ConversationsConsumer(AsyncWebsocketConsumer):
@@ -28,6 +67,7 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
             await self.close()
             return
         self.user = user
+        self.serializer_request = _ScopeRequest(self.scope)
         self.group_name = f'conversations_user_{user.id}'
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
@@ -91,7 +131,7 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
                 {
                     'id': conv.id,
                     'partnership': conv.partnership_id,
-                    'last_message': MessageSerializer(last_msg).data if last_msg else None,
+                    'last_message': MessageSerializer(last_msg, context={'request': self.serializer_request}).data if last_msg else None,
                     'unread_count': unread_count,
                     'created_at': conv.created_at.isoformat() if conv.created_at else None,
                     'updated_at': conv.updated_at.isoformat() if conv.updated_at else None,
@@ -131,6 +171,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # Authenticate via knox token passed as query param ?token=...
         user = await self.authenticate_user()
+        self.serializer_request = _ScopeRequest(self.scope)
         if not user:
             await self.close()
             return
@@ -188,7 +229,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 return
 
             message = await self.create_message(user.id, self.conversation_id, text)
-            serialized = MessageSerializer(message).data
+            serialized = MessageSerializer(message, context={'request': self.serializer_request}).data
 
             # Delivery ack to the sender (message persisted)
             await self.send_json({'type': 'ack', 'ack': 'received', 'message_id': message.id})
@@ -305,7 +346,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         return {
             'id': conv.id,
             'partnership': conv.partnership_id,
-            'last_message': MessageSerializer(last_msg).data if last_msg else None,
+            'last_message': MessageSerializer(last_msg, context={'request': self.serializer_request}).data if last_msg else None,
             'unread_count': unread_count,
             'created_at': conv.created_at.isoformat() if conv.created_at else None,
             'updated_at': conv.updated_at.isoformat() if conv.updated_at else None,
@@ -382,7 +423,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             .order_by('-created_at')[:limit]
         )
         items = list(qs)[::-1]
-        return MessageSerializer(items, many=True).data
+        return MessageSerializer(items, many=True, context={'request': self.serializer_request}).data
 
     @database_sync_to_async
     def message_belongs_to_conversation(self, message_id: int, conversation_id) -> bool:

@@ -7,6 +7,7 @@ from channels.layers import get_channel_layer
 from knox.models import AuthToken
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.parsers import FormParser, MultiPartParser
 from drf_spectacular.utils import extend_schema
 from rest_framework.response import Response
 
@@ -116,6 +117,7 @@ class BuddyViewSet(viewsets.ViewSet):
 			page or qs,
 			many=True,
 			context={
+				'request': request,
 				'pending_to_user_ids': pending_to_user_ids,
 				'pending_request_id_by_to_user_id': pending_request_id_by_to_user_id,
 			},
@@ -165,7 +167,7 @@ class BuddyViewSet(viewsets.ViewSet):
 			buddy_request.message = message
 			buddy_request.save(update_fields=['status', 'responded_at', 'message', 'updated_at'])
 
-		return Response(BuddyRequestSerializer(buddy_request).data, status=status.HTTP_201_CREATED)
+		return Response(BuddyRequestSerializer(buddy_request, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
 
 	@extend_schema(
@@ -179,7 +181,7 @@ class BuddyViewSet(viewsets.ViewSet):
 			to_user=request.user,
 			status=BuddyRequest.STATUS_PENDING,
 		).order_by('-created_at')
-		return Response(BuddyRequestSerializer(qs, many=True).data)
+		return Response(BuddyRequestSerializer(qs, many=True, context={'request': request}).data)
 
 
 	@extend_schema(
@@ -224,7 +226,7 @@ class BuddyViewSet(viewsets.ViewSet):
 			.order_by('-created_at')
 			.first()
 		)
-		last_message_payload = MessageSerializer(last_msg).data if last_msg else None
+		last_message_payload = MessageSerializer(last_msg, context={'request': getattr(self, 'request', None)}).data if last_msg else None
 		conv = Conversation.objects.get(id=conversation_id)
 		for uid in user_ids:
 			unread_count = (
@@ -280,7 +282,7 @@ class BuddyViewSet(viewsets.ViewSet):
 		user = request.user
 		buddy_ids = self._buddy_user_ids(user)
 		qs = Profile.objects.filter(user_id__in=buddy_ids).order_by('-created_at')
-		return Response(ProfileSerializer(qs, many=True).data)
+		return Response(ProfileSerializer(qs, many=True, context={'request': request}).data)
 
 
 class EventViewSet(viewsets.ModelViewSet):
@@ -387,7 +389,7 @@ class OnboardingViewSet(viewsets.ViewSet):
 		Profile.objects.get_or_create(user=user)
 		# auto-login after registration
 		token = AuthToken.objects.create(user)[1]
-		return Response({'user': UserSerializer(user).data, 'token': token}, status=status.HTTP_201_CREATED)
+		return Response({'user': UserSerializer(user, context={'request': request}).data, 'token': token}, status=status.HTTP_201_CREATED)
 
 	@extend_schema(
 		responses={200: ProfileSerializer},
@@ -396,7 +398,7 @@ class OnboardingViewSet(viewsets.ViewSet):
 	@action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
 	def profile(self, request):
 		profile, _ = Profile.objects.get_or_create(user=request.user)
-		return Response(ProfileSerializer(profile).data)
+		return Response(ProfileSerializer(profile, context={'request': request}).data)
 
 	@extend_schema(
 		request=ProfileSerializer,
@@ -406,7 +408,7 @@ class OnboardingViewSet(viewsets.ViewSet):
 	@profile.mapping.put
 	def update_profile(self, request):
 		profile, _ = Profile.objects.get_or_create(user=request.user)
-		serializer = ProfileSerializer(profile, data=request.data)
+		serializer = ProfileSerializer(profile, data=request.data, context={'request': request})
 		serializer.is_valid(raise_exception=True)
 		serializer.save()
 		return Response(serializer.data)
@@ -419,7 +421,7 @@ class OnboardingViewSet(viewsets.ViewSet):
 	@profile.mapping.patch
 	def partial_update_profile(self, request):
 		profile, _ = Profile.objects.get_or_create(user=request.user)
-		serializer = ProfileSerializer(profile, data=request.data, partial=True)
+		serializer = ProfileSerializer(profile, data=request.data, partial=True, context={'request': request})
 		serializer.is_valid(raise_exception=True)
 		serializer.save()
 		return Response(serializer.data)
@@ -429,7 +431,13 @@ class OnboardingViewSet(viewsets.ViewSet):
 		responses={200: UserSerializer, 400: DetailResponseSerializer},
 		description='Set avatar for current user.'
 	)
-	@action(detail=False, methods=['patch'], url_path='user-avatar', permission_classes=[permissions.IsAuthenticated])
+	@action(
+		detail=False,
+		methods=['patch'],
+		url_path='user-avatar',
+		permission_classes=[permissions.IsAuthenticated],
+		parser_classes=[MultiPartParser, FormParser],
+	)
 	def user_avatar(self, request):
 		user = request.user
 		avatar = request.data.get('avatar')
@@ -437,7 +445,7 @@ class OnboardingViewSet(viewsets.ViewSet):
 			return Response({'detail': 'avatar is required.'}, status=status.HTTP_400_BAD_REQUEST)
 		user.avatar = avatar
 		user.save(update_fields=['avatar'])
-		return Response(UserSerializer(user).data)
+		return Response(UserSerializer(user, context={'request': request}).data)
 	
 	@extend_schema(
 		request=ProfileExperienceRequestSerializer,
@@ -460,7 +468,7 @@ class OnboardingViewSet(viewsets.ViewSet):
 			else:
 				return Response({'detail': 'interests must be a list of strings or a comma-separated string.'}, status=status.HTTP_400_BAD_REQUEST)
 		profile.save(update_fields=['experience', 'interests'])
-		return Response(ProfileSerializer(profile).data)
+		return Response(ProfileSerializer(profile, context={'request': request}).data)
 
 	@extend_schema(
 		request=ProfileExperienceRequestSerializer,
@@ -490,7 +498,7 @@ class OnboardingViewSet(viewsets.ViewSet):
 			updated_fields.append('interests')
 
 		profile.save(update_fields=updated_fields)
-		return Response(ProfileSerializer(profile).data)
+		return Response(ProfileSerializer(profile, context={'request': request}).data)
 
 
 
@@ -529,7 +537,7 @@ class AuthViewSet(viewsets.ViewSet):
 			return Response({'detail': 'Invalid credentials.'}, status=status.HTTP_400_BAD_REQUEST)
 
 		token = AuthToken.objects.create(user)[1]
-		return Response({'user': UserSerializer(user).data, 'token': token}, status=status.HTTP_200_OK)
+		return Response({'user': UserSerializer(user, context={'request': request}).data, 'token': token}, status=status.HTTP_200_OK)
 
 	@extend_schema(
 		responses={200: ProfileSerializer},
@@ -538,7 +546,7 @@ class AuthViewSet(viewsets.ViewSet):
 	@action(detail=False, methods=['get'], url_path='userprofile', permission_classes=[permissions.IsAuthenticated])
 	def userprofile(self, request):
 		profile, _ = Profile.objects.get_or_create(user=request.user)
-		return Response(ProfileSerializer(profile).data)
+		return Response(ProfileSerializer(profile, context={'request': request}).data)
 
 	@extend_schema(
 		request=UserUpdateRequestSerializer,
@@ -583,7 +591,7 @@ class AuthViewSet(viewsets.ViewSet):
 			# Most likely: duplicate phone (unique constraint)
 			return Response({'detail': 'Phone already in use.'}, status=status.HTTP_400_BAD_REQUEST)
 
-		return Response(UserSerializer(user).data)
+		return Response(UserSerializer(user, context={'request': request}).data)
 
 	@extend_schema(
 		request=GoogleAuthRequestSerializer,
@@ -624,7 +632,7 @@ class AuthViewSet(viewsets.ViewSet):
 			user.save(update_fields=['email_verified'])
 
 		token = AuthToken.objects.create(user)[1]
-		return Response({'user': UserSerializer(user).data, 'token': token}, status=status.HTTP_200_OK)
+		return Response({'user': UserSerializer(user, context={'request': request}).data, 'token': token}, status=status.HTTP_200_OK)
 
 	@extend_schema(
 		request=GoogleAuthRequestSerializer,
@@ -675,7 +683,7 @@ class AuthViewSet(viewsets.ViewSet):
 		Profile.objects.get_or_create(user=user)
 
 		token = AuthToken.objects.create(user)[1]
-		return Response({'user': UserSerializer(user).data, 'token': token}, status=status.HTTP_201_CREATED)
+		return Response({'user': UserSerializer(user, context={'request': request}).data, 'token': token}, status=status.HTTP_201_CREATED)
 
 	@extend_schema(
 		request=GoogleAuthRequestSerializer,
@@ -731,7 +739,7 @@ class AuthViewSet(viewsets.ViewSet):
 
 		token = AuthToken.objects.create(user)[1]
 		resp_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
-		return Response({'user': UserSerializer(user).data, 'token': token}, status=resp_status)
+		return Response({'user': UserSerializer(user, context={'request': request}).data, 'token': token}, status=resp_status)
 
 
 class GoalViewSet(viewsets.ModelViewSet):
@@ -783,7 +791,7 @@ class MatchViewSet(viewsets.ModelViewSet):
 		# TODO: later filter by goals, focus areas, time zone, etc.
 
 		page = self.paginate_queryset(profiles)
-		serializer = ProfileSerializer(page or profiles, many=True)
+		serializer = ProfileSerializer(page or profiles, many=True, context={'request': request})
 		if page is not None:
 			return self.get_paginated_response(serializer.data)
 		return Response(serializer.data)
@@ -1071,7 +1079,7 @@ class MessageViewSet(viewsets.ModelViewSet):
 			.order_by('-created_at')
 			.first()
 		)
-		last_message_payload = MessageSerializer(last_msg).data if last_msg else None
+		last_message_payload = MessageSerializer(last_msg, context={'request': getattr(self, 'request', None)}).data if last_msg else None
 		for uid in user_ids:
 			unread_count = (
 				Message.objects.filter(conversation_id=conversation_id, is_read=False)
@@ -1108,7 +1116,7 @@ class MessageViewSet(viewsets.ModelViewSet):
 		message.is_read = True
 		message.save(update_fields=['is_read'])
 		self._broadcast_conversation_update(conversation_id=message.conversation_id)
-		return Response(MessageSerializer(message).data)
+		return Response(MessageSerializer(message, context={'request': request}).data)
 
 
 class NotificationViewSet(viewsets.ModelViewSet):
