@@ -195,6 +195,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # Send a presence snapshot to the connecting client
         online_ids = await self.get_online_user_ids(self.conversation_id)
+        participants = await self.get_conversation_participant_ids(self.conversation_id)
+        if participants:
+            online_ids = sorted(set(online_ids) & set(participants))
         await self.send_json({'type': 'presence', 'online_user_ids': online_ids})
 
         # Also push a conversations-list update for this conversation.
@@ -376,6 +379,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def broadcast_presence(self):
         online_ids = await self.get_online_user_ids(self.conversation_id)
+        participants = await self.get_conversation_participant_ids(self.conversation_id)
+        if participants:
+            online_ids = sorted(set(online_ids) & set(participants))
         await self.channel_layer.group_send(
             self.group_name,
             {'type': 'chat.presence', 'online_user_ids': online_ids},
