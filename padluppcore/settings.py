@@ -84,6 +84,35 @@ TEMPLATES = [
 WSGI_APPLICATION = 'padluppcore.wsgi.application'
 ASGI_APPLICATION = 'padluppcore.asgi.application'
 
+# Channels: configure a channel layer so group_add/group_send work.
+# - In dev / single-process Daphne, in-memory is fine.
+# - In production (multiple workers/instances), install `channels-redis` and set REDIS_URL.
+REDIS_URL = os.getenv('REDIS_URL', '').strip()
+if REDIS_URL:
+    try:
+        import channels_redis  # noqa: F401
+
+        CHANNEL_LAYERS = {
+            'default': {
+                'BACKEND': 'channels_redis.core.RedisChannelLayer',
+                'CONFIG': {
+                    'hosts': [REDIS_URL],
+                },
+            }
+        }
+    except Exception:
+        CHANNEL_LAYERS = {
+            'default': {
+                'BACKEND': 'channels.layers.InMemoryChannelLayer',
+            }
+        }
+else:
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels.layers.InMemoryChannelLayer',
+        }
+    }
+
 
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
