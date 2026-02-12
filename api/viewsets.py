@@ -11,6 +11,10 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from drf_spectacular.utils import extend_schema
 from rest_framework.response import Response
 
+from datetime import timedelta
+from zoneinfo import ZoneInfo
+from django.utils import timezone
+
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 
@@ -40,6 +44,7 @@ from .serializers import (
 	MessageSerializer,
 	UserSerializer,
 	WaitlisterSerializer,
+	LongestStreakResponseSerializer,
 )
 from .serializers import (
 	GoogleAuthRequestSerializer,
@@ -1208,5 +1213,100 @@ class WaitlistViewSet(viewsets.ModelViewSet):
 				w.id, w.email, w.name, w.age, w.sex, w.country, w.created_at, w.updated_at
 			])
 		return response
+
+
+class StatsViewSet(viewsets.ViewSet):
+	permission_classes = [permissions.IsAuthenticated]
+
+	def _get_user_tzinfo(self, user):
+		"""Return tzinfo for day-boundary calculations.
+
+		Prefers Profile.time_zone; falls back to Django default.
+		"""
+		profile = Profile.objects.filter(user=user).only('time_zone').first()
+		tz_name = (getattr(profile, 'time_zone', None) or '').strip() if profile else ''
+		if tz_name:
+			try:
+				return ZoneInfo(tz_name)
+			except Exception:
+				pass
+		return timezone.get_default_timezone()
+
+	def _dt_to_local_date(self, dt, tzinfo):
+		if not dt:
+			return None
+		if timezone.is_naive(dt):
+			dt = timezone.make_aware(dt, timezone.get_default_timezone())
+		return timezone.localtime(dt, tzinfo).date()
+
+	def _longest_consecutive_days(self, dates) -> int:
+		unique = sorted(set(dates))
+		if not unique:
+			return 0
+		longest = 1
+		current = 1
+		prev = unique[0]
+		for d in unique[1:]:
+			if d == (prev + timedelta(days=1)):
+				current += 1
+			else:
+				current = 1
+			if current > longest:
+				longest = current
+			prev = d
+		return longest
+
+	def _current_streak_days(self, dates, end_date) -> int:
+		"""Consecutive active days ending on end_date.
+
+		If end_date is not active, current streak is 0.
+		"""
+		if not dates or end_date not in dates:
+			return 0
+		count = 1
+		cursor = end_date
+		while (cursor - timedelta(days=1)) in dates:
+			count += 1
+			cursor = cursor - timedelta(days=1)
+		return count
+
+	@extend_schema(
+		responses={200: LongestStreakResponseSerializer},
+		description=(
+			"Get the current user's streak stats (longest + current consecutive-day activity streak). "
+			"A day counts as active if the user has ANY of: "
+			"(1) a timer session started, (2) evidence submitted, (3) a task completed. "
+			"Day boundaries use the user's Profile.time_zone when available. "
+			"Current streak is the consecutive-day streak ending today (in the user's timezone)."
+		),
+	)
+	@action(detail=False, methods=['get'], url_path='longest-streak')
+	def longest_streak(self, request):
+		user = request.user
+		tzinfo = self._get_user_tzinfo(user)
+		active_dates = set()
+
+		for dt in TimerSession.objects.filter(user=user).values_list('started_at', flat=True).iterator():
+			d = self._dt_to_local_date(dt, tzinfo)
+			if d:
+				active_dates.add(d)
+
+		for dt in Evidence.objects.filter(submitted_by=user).values_list('submitted_at', flat=True).iterator():
+			d = self._dt_to_local_date(dt, tzinfo)
+			if d:
+				active_dates.add(d)
+
+		for dt in Task.objects.filter(owner=user, status=Task.STATUS_COMPLETED).values_list('updated_at', flat=True).iterator():
+			d = self._dt_to_local_date(dt, tzinfo)
+			if d:
+				active_dates.add(d)
+
+		local_today = timezone.localtime(timezone.now(), tzinfo).date()
+		longest = self._longest_consecutive_days(active_dates)
+		current = self._current_streak_days(active_dates, local_today)
+		return Response(
+			{'longest_streak_count': int(longest), 'current_streak_count': int(current)},
+			status=status.HTTP_200_OK,
+		)
 
 

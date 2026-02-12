@@ -157,6 +157,11 @@ class RegisterResponseSerializer(serializers.Serializer):
 	token = serializers.CharField()
 
 
+class LongestStreakResponseSerializer(serializers.Serializer):
+	longest_streak_count = serializers.IntegerField()
+	current_streak_count = serializers.IntegerField()
+
+
 class GoalSerializer(serializers.ModelSerializer):
 	user = UserSerializer(read_only=True)
 	class Meta:

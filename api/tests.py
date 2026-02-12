@@ -8,9 +8,11 @@ from django.test import override_settings
 from rest_framework import status
 from rest_framework.test import APITestCase
 from rest_framework.test import APIRequestFactory
+from django.utils import timezone
+from datetime import datetime, timezone as dt_timezone
 
 from accounts.models import User
-from api.models import BuddyRequest, Partnership, Profile, Conversation, Message
+from api.models import BuddyRequest, Partnership, Profile, Conversation, Message, Goal, Task, TimerSession, Evidence
 from api.serializers import UserSerializer, MessageSerializer
 from api.consumers import _ScopeRequest
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -154,6 +156,42 @@ class BuddyEndpointsTests(APITestCase):
 		url = reverse('auth-user')
 		resp = self.client.patch(url, data={'phone': '+19998887777'}, format='json')
 		self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class StatsEndpointsTests(APITestCase):
+	def _mk_user(self, *, email: str, phone: str, name: str, password: str = 'pass1234'):
+		user = User(email=email, phone=phone, name=name)
+		user.set_password(password)
+		user.save()
+		return user
+
+	def setUp(self):
+		self.user = self._mk_user(email='stats@test.com', name='Stats', phone='+10000000011')
+		Profile.objects.get_or_create(user=self.user, defaults={'time_zone': 'UTC'})
+		self.client.force_authenticate(user=self.user)
+
+	def test_longest_streak_any_activity(self):
+		# Create activity on three consecutive days (UTC): 2026-01-01, 2026-01-02, 2026-01-03
+		d1 = datetime(2026, 1, 1, 10, 0, 0, tzinfo=dt_timezone.utc)
+		d2 = datetime(2026, 1, 2, 11, 0, 0, tzinfo=dt_timezone.utc)
+		d3 = datetime(2026, 1, 3, 12, 0, 0, tzinfo=dt_timezone.utc)
+
+		TimerSession.objects.create(user=self.user, started_at=d1, ended_at=d1)
+
+		goal = Goal.objects.create(user=self.user, title='g', description='')
+		task = Task.objects.create(goal=goal, owner=self.user, title='t', description='', status=Task.STATUS_COMPLETED)
+		# Force updated_at to a deterministic value (auto_now would override on save)
+		Task.objects.filter(id=task.id).update(updated_at=d3)
+
+		evidence = Evidence.objects.create(submitted_by=self.user, task=task, text='x')
+		Evidence.objects.filter(id=evidence.id).update(submitted_at=d2)
+
+		url = reverse('stats-longest-streak')
+		with patch('django.utils.timezone.now', return_value=d3):
+			resp = self.client.get(url)
+		self.assertEqual(resp.status_code, status.HTTP_200_OK)
+		self.assertEqual(resp.data['longest_streak_count'], 3)
+		self.assertEqual(resp.data['current_streak_count'], 3)
 
 
 class GoogleAuthEndpointsTests(APITestCase):

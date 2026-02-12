@@ -20,6 +20,7 @@ from .viewsets import (
 	MessageViewSet,
 	OnboardingViewSet,
 	PartnershipViewSet,
+	StatsViewSet,
 	SubTaskViewSet,
 	TaskViewSet,
 	TimerSessionViewSet,
@@ -43,6 +44,7 @@ router.register('notifications', NotificationViewSet, basename='notifications')
 router.register('conversations', ConversationViewSet, basename='conversations')
 router.register('messages', MessageViewSet, basename='messages')
 router.register('waitlist', WaitlistViewSet, basename='waitlist')
+router.register('stats', StatsViewSet, basename='stats')
 
 
 
