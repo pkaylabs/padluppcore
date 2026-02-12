@@ -16,6 +16,18 @@ DEBUG = True
 
 ALLOWED_HOSTS = ["*", 'localhost', '127.0.0.1', 'api.padlupp.com']
 
+# --- CSRF / proxy settings for HTTPS behind a reverse proxy ---
+# When running behind Nginx/Cloudflare/etc, Django may see the connection as HTTP
+# unless we tell it to trust the forwarded proto header.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = True
+
+# Allow POSTs to the Django admin from the deployed domain.
+# (Django requires scheme in CSRF_TRUSTED_ORIGINS.)
+CSRF_TRUSTED_ORIGINS = [
+    'https://api.padlupp.com',
+]
+
 
 # Application definition
 
