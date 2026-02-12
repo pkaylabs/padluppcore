@@ -11,7 +11,7 @@ from knox.auth import TokenAuthentication
 
 from accounts.models import User
 from .models import Conversation, Message
-from .serializers import MessageSerializer
+from .serializers import MessageSerializer, UserSerializer
 
 
 class _ScopeRequest:
@@ -99,7 +99,7 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
         from django.db.models import Q
 		
         convs = list(
-            Conversation.objects.select_related('partnership')
+            Conversation.objects.select_related('partnership', 'partnership__user_a', 'partnership__user_b')
             .filter(Q(partnership__user_a_id=user_id) | Q(partnership__user_b_id=user_id))
             .order_by('-created_at')
         )
@@ -122,6 +122,9 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
         result = []
         for conv in convs:
             last_msg = last_msgs.get(last_msg_id_by_conv.get(conv.id))
+            partnership = conv.partnership
+            partner_user = partnership.user_b if partnership.user_a_id == user_id else partnership.user_a
+            partner_data = UserSerializer(partner_user, context={'request': self.serializer_request}).data if partner_user else {}
             unread_count = (
                 Message.objects.filter(conversation_id=conv.id, is_read=False)
                 .exclude(sender_id=user_id)
@@ -131,6 +134,8 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
                 {
                     'id': conv.id,
                     'partnership': conv.partnership_id,
+                    'partner_name': partner_data.get('name'),
+                    'partner_avatar': partner_data.get('avatar'),
                     'last_message': MessageSerializer(last_msg, context={'request': self.serializer_request}).data if last_msg else None,
                     'unread_count': unread_count,
                     'created_at': conv.created_at.isoformat() if conv.created_at else None,
@@ -332,9 +337,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def get_conversation_payload_for_user(self, conversation_id: int, user_id: int):
         try:
-            conv = Conversation.objects.select_related('partnership').get(id=conversation_id)
+            conv = Conversation.objects.select_related('partnership', 'partnership__user_a', 'partnership__user_b').get(id=conversation_id)
         except Conversation.DoesNotExist:
             return None
+        partnership = conv.partnership
+        partner_user = partnership.user_b if partnership.user_a_id == user_id else partnership.user_a
+        partner_data = UserSerializer(partner_user, context={'request': self.serializer_request}).data if partner_user else {}
         last_msg = (
             Message.objects.select_related('sender')
             .filter(conversation_id=conversation_id)
@@ -349,6 +357,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
         return {
             'id': conv.id,
             'partnership': conv.partnership_id,
+            'partner_name': partner_data.get('name'),
+            'partner_avatar': partner_data.get('avatar'),
             'last_message': MessageSerializer(last_msg, context={'request': self.serializer_request}).data if last_msg else None,
             'unread_count': unread_count,
             'created_at': conv.created_at.isoformat() if conv.created_at else None,
