@@ -769,6 +769,9 @@ class AuthViewSet(viewsets.ViewSet):
 			return Response({'detail': 'reason is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
 		AccountDeletionRequest.objects.create(user=request.user, reason=reason)
+		# temporarily deactivate the account immediately to prevent further use while we process the deletion request
+		request.user.is_active = False
+		request.user.save(update_fields=['is_active'])
 		return Response({'detail': 'Deletion request received.'}, status=status.HTTP_201_CREATED)
 
 
