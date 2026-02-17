@@ -2,6 +2,7 @@ from pathlib import Path
 
 import os
 from dotenv import load_dotenv
+from datetime import timedelta
 
 load_dotenv()
 
@@ -190,9 +191,9 @@ REST_FRAMEWORK = {
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20,
 }
-# knox - make token non-expiry
+# knox - token expiry
 REST_KNOX = {
-    'TOKEN_TTL': None,
+    'TOKEN_TTL': timedelta(hours=2),
 }
 
 # django cors headers settings
