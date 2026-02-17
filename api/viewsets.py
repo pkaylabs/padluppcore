@@ -18,7 +18,7 @@ from django.utils import timezone
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 
-from accounts.models import User
+from accounts.models import AccountDeletionRequest, User
 from .models import BuddyRequest, Conversation, Evidence, Event, Goal, Match, Notification, Partnership, Profile, SubTask, Task, TimerSession, Message, Waitlister
 from .serializers import (
 	BuddyConnectSerializer,
@@ -49,6 +49,7 @@ from .serializers import (
 from .serializers import (
 	GoogleAuthRequestSerializer,
 	GoogleAuthResponseSerializer,
+	DeleteAccountRequestSerializer,
 	LoginRequestSerializer,
 	LoginResponseSerializer,
 	UserUpdateRequestSerializer,
@@ -745,6 +746,30 @@ class AuthViewSet(viewsets.ViewSet):
 		token = AuthToken.objects.create(user)[1]
 		resp_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
 		return Response({'user': UserSerializer(user, context={'request': request}).data, 'token': token}, status=resp_status)
+
+	@extend_schema(
+		request=DeleteAccountRequestSerializer,
+		responses={
+			201: DetailResponseSerializer,
+			400: DetailResponseSerializer,
+		},
+		description='Receive an account deletion request for the current user.',
+	)
+	@action(
+		detail=False,
+		methods=['post'],
+		url_path='delete-account',
+		permission_classes=[permissions.IsAuthenticated],
+	)
+	def delete_account(self, request):
+		serializer = DeleteAccountRequestSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		reason = (serializer.validated_data.get('reason') or '').strip()
+		if not reason:
+			return Response({'detail': 'reason is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		AccountDeletionRequest.objects.create(user=request.user, reason=reason)
+		return Response({'detail': 'Deletion request received.'}, status=status.HTTP_201_CREATED)
 
 
 class GoalViewSet(viewsets.ModelViewSet):

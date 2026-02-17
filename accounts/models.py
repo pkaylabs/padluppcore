@@ -1,4 +1,5 @@
 from django.db import models
+from django.conf import settings
 
 # Create your models here.
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
@@ -31,3 +32,15 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['phone', 'name']
+
+
+class AccountDeletionRequest(TimeStampedModel):
+    """Represents a user's request to delete their account."""
+
+    id = models.BigAutoField(primary_key=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='account_deletion_requests',
+    )
+    reason = models.TextField()

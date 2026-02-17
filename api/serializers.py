@@ -71,6 +71,11 @@ class UserUpdateRequestSerializer(serializers.Serializer):
 	preferred_notification_phone = serializers.CharField(required=False, allow_blank=True)
 
 
+class DeleteAccountRequestSerializer(serializers.Serializer):
+	"""Request body for account deletion requests."""
+	reason = serializers.CharField(max_length=2000, allow_blank=False, trim_whitespace=True)
+
+
 class CommaSeparatedListField(serializers.Field):
 	"""Represents a comma-separated string in the DB as a list in the API.
 
