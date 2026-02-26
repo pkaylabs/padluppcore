@@ -56,6 +56,27 @@ from .serializers import (
 )
 
 
+WAITLIST_BETA_MESSAGE = (
+	"Thanks for trying Padlupp. We're currently in a limited beta and only waitlisted "
+	"users can sign up or sign in. Join the waitlist and we'll notify you when we open to everyone."
+)
+
+
+def _normalize_email(email: str | None) -> str:
+	return (email or '').strip().lower()
+
+
+def _waitlist_gate_response(email: str | None):
+	"""Return a Response if waitlist gating blocks the request, else None."""
+	if not getattr(settings, 'BETA_WAITLIST_ONLY', True):
+		return None
+	if not email:
+		return Response({'detail': WAITLIST_BETA_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
+	if Waitlister.objects.filter(email__iexact=email).exists():
+		return None
+	return Response({'detail': WAITLIST_BETA_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
+
+
 class BuddyViewSet(viewsets.ViewSet):
 	permission_classes = [permissions.IsAuthenticated]
 
@@ -380,13 +401,17 @@ class OnboardingViewSet(viewsets.ViewSet):
 	)
 	@action(detail=False, methods=['post'])
 	def register(self, request):
-		email = request.data.get('email')
+		email = _normalize_email(request.data.get('email'))
 		password = request.data.get('password')
 		name = request.data.get('name')
 		phone = request.data.get('phone')
 
 		if not email or not password or not name:
 			return Response({'detail': 'email, password and name are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		gate = _waitlist_gate_response(email)
+		if gate is not None:
+			return gate
 
 		if User.objects.filter(email=email).exists():
 			return Response({'detail': 'Email already in use.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -532,11 +557,15 @@ class AuthViewSet(viewsets.ViewSet):
 	@action(detail=False, methods=['post'])
 	def login(self, request):
 		"""Login endpoint. Accepts email and password, returns user and token."""
-		email = request.data.get('email')
+		email = _normalize_email(request.data.get('email'))
 		password = request.data.get('password')
 
 		if not email or not password:
 			return Response({'detail': 'email and password are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		gate = _waitlist_gate_response(email)
+		if gate is not None:
+			return gate
 
 		user = authenticate(request, email=email, password=password)
 		if not user:
@@ -624,9 +653,13 @@ class AuthViewSet(viewsets.ViewSet):
 		except ValueError:
 			return Response({'detail': 'Invalid Google token.'}, status=status.HTTP_400_BAD_REQUEST)
 
-		email = (payload.get('email') or '').strip().lower()
+		email = _normalize_email(payload.get('email'))
 		if not email:
 			return Response({'detail': 'Google token missing email.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		gate = _waitlist_gate_response(email)
+		if gate is not None:
+			return gate
 
 		user = User.objects.filter(email=email).first()
 		if not user:
@@ -665,9 +698,13 @@ class AuthViewSet(viewsets.ViewSet):
 		except ValueError:
 			return Response({'detail': 'Invalid Google token.'}, status=status.HTTP_400_BAD_REQUEST)
 
-		email = (payload.get('email') or '').strip().lower()
+		email = _normalize_email(payload.get('email'))
 		if not email:
 			return Response({'detail': 'Google token missing email.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		gate = _waitlist_gate_response(email)
+		if gate is not None:
+			return gate
 
 		if User.objects.filter(email=email).exists():
 			return Response({'detail': 'Email already in use.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -717,9 +754,13 @@ class AuthViewSet(viewsets.ViewSet):
 		except ValueError:
 			return Response({'detail': 'Invalid Google token.'}, status=status.HTTP_400_BAD_REQUEST)
 
-		email = (payload.get('email') or '').strip().lower()
+		email = _normalize_email(payload.get('email'))
 		if not email:
 			return Response({'detail': 'Google token missing email.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		gate = _waitlist_gate_response(email)
+		if gate is not None:
+			return gate
 
 		user = User.objects.filter(email=email).first()
 		created = False

@@ -232,3 +232,7 @@ SPECTACULAR_SETTINGS = {
 # Used to validate the `aud` claim on incoming Google `id_token`s.
 GOOGLE_OAUTH2_CLIENT_ID = os.getenv('GOOGLE_OAUTH2_CLIENT_ID', '')
 
+# Temporary beta gating: only allow waitlisters to sign up/sign in.
+# Set env var BETA_WAITLIST_ONLY=0 to disable.
+BETA_WAITLIST_ONLY = os.getenv('BETA_WAITLIST_ONLY', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
+
