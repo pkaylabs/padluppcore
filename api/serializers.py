@@ -87,6 +87,31 @@ class InviteUserResponseSerializer(serializers.Serializer):
 	waitlisted = serializers.BooleanField()
 
 
+class ForgotPasswordRequestOtpSerializer(serializers.Serializer):
+	email = serializers.EmailField(allow_blank=False)
+
+
+class ForgotPasswordVerifyOtpSerializer(serializers.Serializer):
+	email = serializers.EmailField(allow_blank=False)
+	otp = serializers.CharField(min_length=4, max_length=12, allow_blank=False, trim_whitespace=True)
+
+
+class ForgotPasswordVerifyOtpResponseSerializer(serializers.Serializer):
+	detail = serializers.CharField()
+	reset_token = serializers.CharField()
+
+
+class ForgotPasswordResetPasswordSerializer(serializers.Serializer):
+	reset_token = serializers.CharField(allow_blank=False, trim_whitespace=True)
+	new_password = serializers.CharField(min_length=6, max_length=128, allow_blank=False, trim_whitespace=False)
+	confirm_password = serializers.CharField(min_length=6, max_length=128, allow_blank=False, trim_whitespace=False)
+
+	def validate(self, attrs):
+		if attrs.get('new_password') != attrs.get('confirm_password'):
+			raise serializers.ValidationError({'confirm_password': 'Passwords do not match.'})
+		return attrs
+
+
 class CommaSeparatedListField(serializers.Field):
 	"""Represents a comma-separated string in the DB as a list in the API.
 

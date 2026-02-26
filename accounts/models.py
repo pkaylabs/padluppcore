@@ -44,3 +44,35 @@ class AccountDeletionRequest(TimeStampedModel):
         related_name='account_deletion_requests',
     )
     reason = models.TextField()
+
+
+class PasswordResetOTP(TimeStampedModel):
+    """OTP + reset token records for the forgot-password flow.
+
+    Security notes:
+    - OTP and reset token are stored hashed (never plaintext).
+    - OTP can be used only once to mint a reset token.
+    - Reset token can be used only once to reset the password.
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='password_reset_otps',
+    )
+
+    otp_hash = models.CharField(max_length=256)
+    otp_expires_at = models.DateTimeField()
+    otp_used_at = models.DateTimeField(null=True, blank=True)
+
+    reset_token_hash = models.CharField(max_length=256, blank=True, default='')
+    reset_token_expires_at = models.DateTimeField(null=True, blank=True)
+    reset_token_used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['user', '-created_at']),
+            models.Index(fields=['otp_expires_at']),
+            models.Index(fields=['reset_token_expires_at']),
+        ]

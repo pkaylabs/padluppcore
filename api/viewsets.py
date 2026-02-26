@@ -1,7 +1,9 @@
 from django.contrib.auth import authenticate
 from django.conf import settings
+from django.contrib.auth.hashers import check_password, make_password
 from django.db import IntegrityError
 from django.db import models
+import secrets
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from knox.models import AuthToken
@@ -20,7 +22,7 @@ from google.oauth2 import id_token as google_id_token
 
 from padluppcore.utils.email import EmailSendError, send_mailgun_email
 
-from accounts.models import AccountDeletionRequest, User
+from accounts.models import AccountDeletionRequest, PasswordResetOTP, User
 from .models import BuddyRequest, Conversation, Evidence, Event, Goal, Match, Notification, Partnership, Profile, SubTask, Task, TimerSession, Message, Waitlister
 from .serializers import (
 	BuddyConnectSerializer,
@@ -52,6 +54,10 @@ from .serializers import (
 	GoogleAuthRequestSerializer,
 	GoogleAuthResponseSerializer,
 	DeleteAccountRequestSerializer,
+	ForgotPasswordRequestOtpSerializer,
+	ForgotPasswordResetPasswordSerializer,
+	ForgotPasswordVerifyOtpResponseSerializer,
+	ForgotPasswordVerifyOtpSerializer,
 	InviteUserRequestSerializer,
 	InviteUserResponseSerializer,
 	LoginRequestSerializer,
@@ -79,6 +85,16 @@ def _waitlist_gate_response(email: str | None):
 	if Waitlister.objects.filter(email__iexact=email).exists():
 		return None
 	return Response({'detail': WAITLIST_BETA_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
+
+
+def _generate_password_reset_otp() -> str:
+	# 6-digit numeric OTP
+	return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def _generate_password_reset_token() -> str:
+	# High-entropy token returned once to the client.
+	return secrets.token_urlsafe(32)
 
 
 class BuddyViewSet(viewsets.ViewSet):
@@ -627,6 +643,125 @@ class AuthViewSet(viewsets.ViewSet):
 
 		token = AuthToken.objects.create(user)[1]
 		return Response({'user': UserSerializer(user, context={'request': request}).data, 'token': token}, status=status.HTTP_200_OK)
+
+	@extend_schema(
+		request=ForgotPasswordRequestOtpSerializer,
+		responses={200: DetailResponseSerializer, 400: DetailResponseSerializer, 502: DetailResponseSerializer},
+		description='Forgot password: request an OTP sent to the provided email.',
+	)
+	@action(detail=False, methods=['post'], url_path='forgot-password/request-otp')
+	def forgot_password_request_otp(self, request):
+		serializer = ForgotPasswordRequestOtpSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		email = _normalize_email(serializer.validated_data.get('email'))
+		user = User.objects.filter(email__iexact=email).first()
+		if not user:
+			return Response({'detail': 'No account found for this email.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		min_interval = int(getattr(settings, 'PASSWORD_RESET_OTP_MIN_INTERVAL_SECONDS', 60))
+		if min_interval > 0:
+			last = PasswordResetOTP.objects.filter(user=user).order_by('-created_at').first()
+			if last and last.created_at and (timezone.now() - last.created_at).total_seconds() < min_interval:
+				return Response({'detail': 'Please wait before requesting another OTP.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		otp = _generate_password_reset_otp()
+		expires_minutes = int(getattr(settings, 'PASSWORD_RESET_OTP_TTL_MINUTES', 10))
+		expires_at = timezone.now() + timedelta(minutes=expires_minutes)
+
+		PasswordResetOTP.objects.create(
+			user=user,
+			otp_hash=make_password(otp),
+			otp_expires_at=expires_at,
+		)
+
+		subject = 'Your Padlupp password reset code'
+		text = (
+			f"Your Padlupp password reset code is: {otp}\n\n"
+			f"This code expires in {expires_minutes} minutes."
+		)
+		try:
+			send_mailgun_email(to_email=email, subject=subject, text=text, tags=['forgot_password'])
+		except EmailSendError:
+			return Response({'detail': 'Failed to send OTP email.'}, status=status.HTTP_502_BAD_GATEWAY)
+		except Exception:
+			return Response({'detail': 'Failed to send OTP email.'}, status=status.HTTP_502_BAD_GATEWAY)
+
+		return Response({'detail': 'OTP sent.'}, status=status.HTTP_200_OK)
+
+	@extend_schema(
+		request=ForgotPasswordVerifyOtpSerializer,
+		responses={200: ForgotPasswordVerifyOtpResponseSerializer, 400: DetailResponseSerializer},
+		description='Forgot password: verify OTP and receive a reset token.',
+	)
+	@action(detail=False, methods=['post'], url_path='forgot-password/verify-otp')
+	def forgot_password_verify_otp(self, request):
+		serializer = ForgotPasswordVerifyOtpSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		email = _normalize_email(serializer.validated_data.get('email'))
+		otp = (serializer.validated_data.get('otp') or '').strip()
+
+		user = User.objects.filter(email__iexact=email).first()
+		if not user:
+			return Response({'detail': 'No account found for this email.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		now = timezone.now()
+		rec = (
+			PasswordResetOTP.objects.filter(user=user, otp_used_at__isnull=True)
+			.order_by('-created_at')
+			.first()
+		)
+		if not rec or not rec.otp_expires_at or rec.otp_expires_at <= now:
+			return Response({'detail': 'OTP expired or invalid.'}, status=status.HTTP_400_BAD_REQUEST)
+		if not check_password(otp, rec.otp_hash):
+			return Response({'detail': 'OTP expired or invalid.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		reset_token = _generate_password_reset_token()
+		reset_token_ttl = int(getattr(settings, 'PASSWORD_RESET_TOKEN_TTL_MINUTES', 30))
+		rec.otp_used_at = now
+		rec.reset_token_hash = make_password(reset_token)
+		rec.reset_token_expires_at = now + timedelta(minutes=reset_token_ttl)
+		rec.save(update_fields=['otp_used_at', 'reset_token_hash', 'reset_token_expires_at', 'updated_at'])
+
+		return Response(
+			{'detail': 'OTP verified.', 'reset_token': reset_token},
+			status=status.HTTP_200_OK,
+		)
+
+	@extend_schema(
+		request=ForgotPasswordResetPasswordSerializer,
+		responses={200: DetailResponseSerializer, 400: DetailResponseSerializer},
+		description='Forgot password: reset password using the reset token from OTP verification.',
+	)
+	@action(detail=False, methods=['post'], url_path='forgot-password/reset-password')
+	def forgot_password_reset_password(self, request):
+		serializer = ForgotPasswordResetPasswordSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		reset_token = (serializer.validated_data.get('reset_token') or '').strip()
+		new_password = serializer.validated_data.get('new_password')
+
+		now = timezone.now()
+		# Search recent candidates only for performance.
+		candidates = PasswordResetOTP.objects.filter(
+			reset_token_used_at__isnull=True,
+			reset_token_expires_at__gt=now,
+		).select_related('user').order_by('-created_at')[:25]
+
+		match = None
+		for rec in candidates:
+			if rec.reset_token_hash and check_password(reset_token, rec.reset_token_hash):
+				match = rec
+				break
+
+		if not match:
+			return Response({'detail': 'Reset token expired or invalid.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		user = match.user
+		user.set_password(new_password)
+		user.save(update_fields=['password', 'updated_at'])
+		match.reset_token_used_at = now
+		match.save(update_fields=['reset_token_used_at', 'updated_at'])
+
+		return Response({'detail': 'Password reset successful.'}, status=status.HTTP_200_OK)
 
 	@extend_schema(
 		request=InviteUserRequestSerializer,

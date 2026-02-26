@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 
-from .models import AccountDeletionRequest, User
+from .models import AccountDeletionRequest, PasswordResetOTP, User
 
 
 @admin.register(User)
@@ -37,5 +37,12 @@ class UserAdmin(BaseUserAdmin):
 class AccountDeletionRequestAdmin(admin.ModelAdmin):
 	list_display = ('id', 'user', 'created_at')
 	search_fields = ('user__email', 'user__phone', 'reason')
+	ordering = ('-created_at',)
+
+
+@admin.register(PasswordResetOTP)
+class PasswordResetOTPAdmin(admin.ModelAdmin):
+	list_display = ('id', 'user', 'otp_expires_at', 'otp_used_at', 'reset_token_expires_at', 'reset_token_used_at', 'created_at')
+	search_fields = ('user__email', 'user__phone')
 	ordering = ('-created_at',)
 

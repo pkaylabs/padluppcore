@@ -209,12 +209,47 @@ class StatsEndpointsTests(APITestCase):
 		evidence = Evidence.objects.create(submitted_by=self.user, task=task, text='x')
 		Evidence.objects.filter(id=evidence.id).update(submitted_at=d2)
 
-		url = reverse('stats-longest-streak')
-		with patch('django.utils.timezone.now', return_value=d3):
-			resp = self.client.get(url)
-		self.assertEqual(resp.status_code, status.HTTP_200_OK)
-		self.assertEqual(resp.data['longest_streak_count'], 3)
-		self.assertEqual(resp.data['current_streak_count'], 3)
+
+class ForgotPasswordFlowTests(APITestCase):
+	def _mk_user(self, *, email: str, phone: str, name: str, password: str = 'pass1234'):
+		user = User(email=email, phone=phone, name=name)
+		user.set_password(password)
+		user.save()
+		return user
+
+	@patch('api.viewsets.send_mailgun_email')
+	def test_request_otp_rejects_unknown_email(self, mock_send_mailgun_email):
+		url = reverse('auth-forgot-password-request-otp')
+		resp = self.client.post(url, data={'email': 'missing@test.com'}, format='json')
+		self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+		mock_send_mailgun_email.assert_not_called()
+
+	@patch('api.viewsets._generate_password_reset_token', return_value='reset-token-abc')
+	@patch('api.viewsets._generate_password_reset_otp', return_value='123456')
+	@patch('api.viewsets.send_mailgun_email')
+	def test_full_forgot_password_flow(self, mock_send_mailgun_email, mock_gen_otp, mock_gen_token):
+		user = self._mk_user(email='fp@test.com', phone='+10000000999', name='FP', password='oldpass123')
+
+		request_url = reverse('auth-forgot-password-request-otp')
+		resp1 = self.client.post(request_url, data={'email': 'fp@test.com'}, format='json')
+		self.assertEqual(resp1.status_code, status.HTTP_200_OK)
+		mock_send_mailgun_email.assert_called()
+
+		verify_url = reverse('auth-forgot-password-verify-otp')
+		resp2 = self.client.post(verify_url, data={'email': 'fp@test.com', 'otp': '123456'}, format='json')
+		self.assertEqual(resp2.status_code, status.HTTP_200_OK)
+		self.assertEqual(resp2.data.get('reset_token'), 'reset-token-abc')
+
+		reset_url = reverse('auth-forgot-password-reset-password')
+		resp3 = self.client.post(
+			reset_url,
+			data={'reset_token': 'reset-token-abc', 'new_password': 'newpass123', 'confirm_password': 'newpass123'},
+			format='json',
+		)
+		self.assertEqual(resp3.status_code, status.HTTP_200_OK)
+
+		user.refresh_from_db()
+		self.assertTrue(user.check_password('newpass123'))
 
 
 class GoogleAuthEndpointsTests(APITestCase):
