@@ -215,6 +215,17 @@ EMAIL_USE_TLS = True
 EMAIL_USE_SSL = False
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_MAIL')
 
+# Mailgun (optional)
+# Used for sending notification emails via Mailgun HTTP API.
+MAILGUN_API_KEY = os.getenv('MAILGUN_API_KEY', '').strip()
+MAILGUN_DOMAIN = os.getenv('MAILGUN_DOMAIN', '').strip()
+MAILGUN_API_BASE_URL = os.getenv('MAILGUN_API_BASE_URL', 'https://api.mailgun.net/v3').strip().rstrip('/')
+MAILGUN_FROM_EMAIL = os.getenv('MAILGUN_FROM_EMAIL', DEFAULT_FROM_EMAIL or '').strip()
+
+# Notification emails
+# Disabled by default; enable with EMAIL_NOTIFICATIONS_ENABLED=1 and Mailgun config.
+EMAIL_NOTIFICATIONS_ENABLED = os.getenv('EMAIL_NOTIFICATIONS_ENABLED', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
+
 # SMS SETTINGS
 SENDER_ID = os.getenv('SMS_SENDER_ID') # 11 characters max
 ARKESEL_API_KEY = os.getenv('ARKESEL_SMS_API_KEY')

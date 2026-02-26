@@ -4,11 +4,14 @@ import logging
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+from django.conf import settings
 from django.db import transaction
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
-from .models import Conversation, Message
+from padluppcore.utils.email import EmailSendError, send_mailgun_email
+
+from .models import Conversation, Message, Notification
 from .serializers import MessageSerializer
 
 logger = logging.getLogger(__name__)
@@ -68,5 +71,94 @@ def broadcast_conversation_created(sender, instance: Conversation, created: bool
         except Exception:
             # Best-effort only: never block DB writes/admin save on websocket issues.
             logger.exception('Failed to broadcast new conversation websocket update')
+
+    transaction.on_commit(_send_after_commit)
+
+
+def _email_notifications_enabled() -> bool:
+    enabled = bool(getattr(settings, 'EMAIL_NOTIFICATIONS_ENABLED', False))
+    if not enabled:
+        return False
+    # Require Mailgun config as well, otherwise skip silently.
+    return bool(
+        getattr(settings, 'MAILGUN_API_KEY', '')
+        and getattr(settings, 'MAILGUN_DOMAIN', '')
+        and getattr(settings, 'MAILGUN_FROM_EMAIL', '')
+    )
+
+
+def _notification_email_content(notification: Notification) -> tuple[str, str]:
+    ntype = (notification.type or '').strip()
+    payload = notification.payload or {}
+
+    if ntype == 'new_match':
+        subject = 'You have a new match'
+        text = 'You have a new match on Padlupp. Open the app to view details.'
+        return subject, text
+
+    if ntype == 'new_task':
+        title = payload.get('title') or 'a new task'
+        subject = 'New task from your partner'
+        text = f"Your partner created a new task: {title}. Open the app to view it."
+        return subject, text
+
+    if ntype == 'review_requested':
+        title = payload.get('title') or 'a task'
+        subject = 'Review requested'
+        text = f"Your partner requested a review for: {title}. Open the app to review it."
+        return subject, text
+
+    if ntype == 'evidence_submitted':
+        subject = 'Evidence submitted'
+        text = 'Your partner submitted evidence for a task. Open the app to review it.'
+        return subject, text
+
+    if ntype == 'task_approved':
+        subject = 'Task approved'
+        text = 'Your task was approved by your partner. Open the app to see the update.'
+        return subject, text
+
+    if ntype == 'task_changes_requested':
+        subject = 'Changes requested'
+        comment = payload.get('comment')
+        if comment:
+            text = f"Your partner requested changes on a task. Comment: {comment}"
+        else:
+            text = 'Your partner requested changes on a task. Open the app to see details.'
+        return subject, text
+
+    subject = 'New notification'
+    text = f"You have a new notification ({ntype or 'unknown'}). Open the app to view it."
+    return subject, text
+
+
+@receiver(post_save, sender=Notification)
+def email_notification_created(sender, instance: Notification, created: bool, **kwargs):
+    if not created:
+        return
+    if not _email_notifications_enabled():
+        return
+
+    user = getattr(instance, 'user', None)
+    if not user:
+        return
+    to_email = getattr(user, 'preferred_notification_email', None) or getattr(user, 'email', None)
+    if not to_email:
+        return
+
+    subject, text = _notification_email_content(instance)
+
+    def _send_after_commit():
+        try:
+            send_mailgun_email(
+                to_email=to_email,
+                subject=subject,
+                text=text,
+                tags=['notification', instance.type or 'unknown'],
+            )
+        except EmailSendError:
+            logger.exception('Failed to send notification email')
+        except Exception:
+            logger.exception('Unexpected error sending notification email')
 
     transaction.on_commit(_send_after_commit)

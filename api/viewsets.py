@@ -942,18 +942,16 @@ class MatchViewSet(viewsets.ModelViewSet):
 				if created:
 					# Auto-create conversation for this partnership
 					Conversation.objects.create(partnership=partnership)
-					Notification.objects.bulk_create([
-						Notification(
-							user=user_a,
-							type='new_match',
-							payload={'partner_id': user_b.id, 'partnership_id': partnership.id},
-						),
-						Notification(
-							user=user_b,
-							type='new_match',
-							payload={'partner_id': user_a.id, 'partnership_id': partnership.id},
-						),
-					])
+					Notification.objects.create(
+						user=user_a,
+						type='new_match',
+						payload={'partner_id': user_b.id, 'partnership_id': partnership.id},
+					)
+					Notification.objects.create(
+						user=user_b,
+						type='new_match',
+						payload={'partner_id': user_a.id, 'partnership_id': partnership.id},
+					)
 
 		return match
 
