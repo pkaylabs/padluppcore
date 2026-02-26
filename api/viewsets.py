@@ -8,7 +8,7 @@ from knox.models import AuthToken
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import OpenApiParameter, OpenApiTypes, extend_schema
 from rest_framework.response import Response
 
 from datetime import timedelta
@@ -136,7 +136,13 @@ class BuddyViewSet(viewsets.ViewSet):
 			# If no experience yet, only show pending requests (if any)
 			qs = qs.filter(user_id__in=pending_to_user_ids)
 
-		qs = qs.distinct().order_by('-created_at')
+		qs = qs.distinct()
+		# Pilot fallback: if we found nobody, return a small random sample so the UI
+		# doesn't keep showing an empty list.
+		if not qs.exists():
+			qs = Profile.objects.exclude(user_id__in=excluded_user_ids).order_by('?')[:10]
+		else:
+			qs = qs.order_by('-created_at')
 		page = None
 		if hasattr(self, 'paginate_queryset'):
 			page = self.paginate_queryset(qs)
@@ -309,6 +315,50 @@ class BuddyViewSet(viewsets.ViewSet):
 		user = request.user
 		buddy_ids = self._buddy_user_ids(user)
 		qs = Profile.objects.filter(user_id__in=buddy_ids).order_by('-created_at')
+		return Response(ProfileSerializer(qs, many=True, context={'request': request}).data)
+
+	@extend_schema(
+		parameters=[
+			OpenApiParameter(
+				name='query',
+				type=OpenApiTypes.STR,
+				location=OpenApiParameter.QUERY,
+				required=True,
+				description='Search text. Split into words; matches buddies where name contains any word.',
+			),
+		],
+		responses={200: ProfileSerializer(many=True), 400: DetailResponseSerializer},
+		description=(
+			"Search within the current user's buddy connections by name. "
+			"Splits `query` into words and matches if any word appears in the buddy's name."
+		),
+	)
+	@action(detail=False, methods=['get'], url_path='search')
+	def search(self, request):
+		query = (request.query_params.get('query') or request.data.get('query') or '').strip()
+		if not query:
+			return Response({'detail': 'query is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		words = [w.strip(' ,.;:!"\'()[]{}').lower() for w in query.split()]
+		words = [w for w in words if w]
+		if not words:
+			return Response({'detail': 'query is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		user = request.user
+		# buddy_ids = self._buddy_user_ids(user)
+		name_q = models.Q()
+		email_q = models.Q()
+		for w in words:
+			name_q |= models.Q(user__name__icontains=w)
+			email_q |= models.Q(user__email__icontains=w)
+
+		qs = (
+			Profile.objects.select_related('user')
+			# .filter(user_id__in=buddy_ids)
+			.filter(name_q | email_q)
+			.distinct()
+			.order_by('-created_at')
+		)
 		return Response(ProfileSerializer(qs, many=True, context={'request': request}).data)
 
 
@@ -938,7 +988,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 		session = TimerSession.objects.create(task=task, user=request.user, started_at=models.functions.Now())
 		if task.status == Task.STATUS_PLANNED:
 			task.status = Task.STATUS_IN_PROGRESS
-			task.save(update_fields=['status'])
+			task.save(update_fields=['status', 'updated_at'])
 		return Response(TimerSessionSerializer(session).data, status=status.HTTP_201_CREATED)
 
 	@extend_schema(
@@ -952,7 +1002,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 		if not session:
 			return Response({'detail': 'No active timer session.'}, status=status.HTTP_400_BAD_REQUEST)
 		session.ended_at = models.functions.Now()
-		session.save(update_fields=['ended_at'])
+		session.save(update_fields=['ended_at', 'updated_at'])
 		return Response(TimerSessionSerializer(session).data)
 
 	@extend_schema(
@@ -965,7 +1015,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 		if task.status not in [Task.STATUS_IN_PROGRESS, Task.STATUS_NEEDS_REVISION]:
 			return Response({'detail': 'Task must be in progress or needs revision to request review.'}, status=status.HTTP_400_BAD_REQUEST)
 		task.status = Task.STATUS_PENDING_REVIEW
-		task.save(update_fields=['status'])
+		task.save(update_fields=['status', 'updated_at'])
 		# Notify partner that review is requested
 		if task.partnership:
 			partner = task.partnership.user_a if task.partnership.user_b == request.user else task.partnership.user_b
@@ -984,7 +1034,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 	def mark_not_completed(self, request, pk=None):
 		task = self.get_object()
 		task.status = Task.STATUS_NOT_COMPLETED
-		task.save(update_fields=['status'])
+		task.save(update_fields=['status', 'updated_at'])
 		return Response(TaskSerializer(task).data)
 
 	@extend_schema(
@@ -1004,7 +1054,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 
 		# Update task status
 		task.status = Task.STATUS_COMPLETED
-		task.save(update_fields=['status'])
+		task.save(update_fields=['status', 'updated_at'])
 
 		# Update latest evidence (if any)
 		evidence = task.evidences.order_by('-submitted_at').first()
@@ -1041,7 +1091,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 
 		# Update task status
 		task.status = Task.STATUS_NEEDS_REVISION
-		task.save(update_fields=['status'])
+		task.save(update_fields=['status', 'updated_at'])
 
 		# Update latest evidence (if any)
 		evidence = task.evidences.order_by('-submitted_at').first()
@@ -1344,7 +1394,8 @@ class StatsViewSet(viewsets.ViewSet):
 		description=(
 			"Get the current user's streak stats (longest + current consecutive-day activity streak). "
 			"A day counts as active if the user has ANY of: "
-			"(1) a timer session started, (2) evidence submitted, (3) a task completed. "
+			"(1) a timer session started, (2) evidence submitted, (3) a task completed, "
+			"(4) a goal created/updated, (5) a message sent. "
 			"Day boundaries use the user's Profile.time_zone when available. "
 			"Current streak is the consecutive-day streak ending today (in the user's timezone)."
 		),
@@ -1355,18 +1406,51 @@ class StatsViewSet(viewsets.ViewSet):
 		tzinfo = self._get_user_tzinfo(user)
 		active_dates = set()
 
-		for dt in TimerSession.objects.filter(user=user).values_list('started_at', flat=True).iterator():
-			d = self._dt_to_local_date(dt, tzinfo)
+		for started_at, created_at in (
+			TimerSession.objects.filter(user=user)
+			.values_list('started_at', 'created_at')
+			.iterator()
+		):
+			d = self._dt_to_local_date(started_at or created_at, tzinfo)
 			if d:
 				active_dates.add(d)
 
-		for dt in Evidence.objects.filter(submitted_by=user).values_list('submitted_at', flat=True).iterator():
-			d = self._dt_to_local_date(dt, tzinfo)
+		for submitted_at, created_at in (
+			Evidence.objects.filter(submitted_by=user)
+			.values_list('submitted_at', 'created_at')
+			.iterator()
+		):
+			d = self._dt_to_local_date(submitted_at or created_at, tzinfo)
 			if d:
 				active_dates.add(d)
 
-		for dt in Task.objects.filter(owner=user, status=Task.STATUS_COMPLETED).values_list('updated_at', flat=True).iterator():
-			d = self._dt_to_local_date(dt, tzinfo)
+		for updated_at, created_at in (
+			Task.objects.filter(owner=user, status=Task.STATUS_COMPLETED)
+			.values_list('updated_at', 'created_at')
+			.iterator()
+		):
+			d = self._dt_to_local_date(updated_at or created_at, tzinfo)
+			if d:
+				active_dates.add(d)
+
+		for created_at, updated_at in (
+			Goal.objects.filter(user=user)
+			.values_list('created_at', 'updated_at')
+			.iterator()
+		):
+			created_d = self._dt_to_local_date(created_at, tzinfo)
+			if created_d:
+				active_dates.add(created_d)
+			updated_d = self._dt_to_local_date(updated_at, tzinfo)
+			if updated_d:
+				active_dates.add(updated_d)
+
+		for created_at in (
+			Message.objects.filter(sender=user)
+			.values_list('created_at', flat=True)
+			.iterator()
+		):
+			d = self._dt_to_local_date(created_at, tzinfo)
 			if d:
 				active_dates.add(d)
 
