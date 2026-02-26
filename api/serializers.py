@@ -76,6 +76,17 @@ class DeleteAccountRequestSerializer(serializers.Serializer):
 	reason = serializers.CharField(max_length=2000, allow_blank=False, trim_whitespace=True)
 
 
+class InviteUserRequestSerializer(serializers.Serializer):
+	"""Request body for inviting a user by email."""
+	email = serializers.EmailField(allow_blank=False)
+	name = serializers.CharField(required=False, allow_blank=True, max_length=255)
+
+
+class InviteUserResponseSerializer(serializers.Serializer):
+	detail = serializers.CharField()
+	waitlisted = serializers.BooleanField()
+
+
 class CommaSeparatedListField(serializers.Field):
 	"""Represents a comma-separated string in the DB as a list in the API.
 

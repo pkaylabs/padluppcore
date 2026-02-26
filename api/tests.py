@@ -12,7 +12,7 @@ from django.utils import timezone
 from datetime import datetime, timezone as dt_timezone
 
 from accounts.models import User
-from api.models import BuddyRequest, Partnership, Profile, Conversation, Message, Goal, Task, TimerSession, Evidence
+from api.models import BuddyRequest, Partnership, Profile, Conversation, Message, Goal, Task, TimerSession, Evidence, Waitlister
 from api.serializers import UserSerializer, MessageSerializer
 from api.consumers import _ScopeRequest
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -146,6 +146,29 @@ class BuddyEndpointsTests(APITestCase):
 		self.assertEqual(resp.data['name'], 'New Name')
 		self.assertEqual(resp.data['preferred_notification_email'], 'notify@test.com')
 		self.assertEqual(resp.data['preferred_notification_phone'], '+15550001111')
+
+	@patch('api.viewsets.send_mailgun_email')
+	def test_invite_adds_waitlist_and_sends_email(self, mock_send_mailgun_email):
+		invite_url = reverse('auth-invite')
+		resp = self.client.post(invite_url, data={'email': 'newperson@test.com', 'name': 'New Person'}, format='json')
+		self.assertEqual(resp.status_code, status.HTTP_200_OK)
+		self.assertEqual(resp.data.get('detail'), 'Invite sent.')
+		self.assertTrue(resp.data.get('waitlisted'))
+
+		self.assertTrue(Waitlister.objects.filter(email='newperson@test.com').exists())
+		mock_send_mailgun_email.assert_called()
+		called_kwargs = mock_send_mailgun_email.call_args.kwargs
+		self.assertEqual(called_kwargs.get('to_email'), 'newperson@test.com')
+		self.assertIn('Padlupp', called_kwargs.get('subject', ''))
+		self.assertIn('https://app.padlupp.com', called_kwargs.get('text', ''))
+
+	@patch('api.viewsets.send_mailgun_email')
+	def test_invite_existing_user_rejected(self, mock_send_mailgun_email):
+		# self.other exists from setUp
+		invite_url = reverse('auth-invite')
+		resp = self.client.post(invite_url, data={'email': self.other.email}, format='json')
+		self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+		mock_send_mailgun_email.assert_not_called()
 
 	def test_update_user_duplicate_phone_rejected(self):
 		# Other user owns this phone

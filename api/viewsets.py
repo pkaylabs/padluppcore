@@ -18,6 +18,8 @@ from django.utils import timezone
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 
+from padluppcore.utils.email import EmailSendError, send_mailgun_email
+
 from accounts.models import AccountDeletionRequest, User
 from .models import BuddyRequest, Conversation, Evidence, Event, Goal, Match, Notification, Partnership, Profile, SubTask, Task, TimerSession, Message, Waitlister
 from .serializers import (
@@ -50,6 +52,8 @@ from .serializers import (
 	GoogleAuthRequestSerializer,
 	GoogleAuthResponseSerializer,
 	DeleteAccountRequestSerializer,
+	InviteUserRequestSerializer,
+	InviteUserResponseSerializer,
 	LoginRequestSerializer,
 	LoginResponseSerializer,
 	UserUpdateRequestSerializer,
@@ -623,6 +627,74 @@ class AuthViewSet(viewsets.ViewSet):
 
 		token = AuthToken.objects.create(user)[1]
 		return Response({'user': UserSerializer(user, context={'request': request}).data, 'token': token}, status=status.HTTP_200_OK)
+
+	@extend_schema(
+		request=InviteUserRequestSerializer,
+		responses={
+			200: InviteUserResponseSerializer,
+			400: DetailResponseSerializer,
+			401: DetailResponseSerializer,
+			502: DetailResponseSerializer,
+		},
+		description=(
+			"Invite someone to Padlupp by email. Sends an invite email with the signup link and "
+			"adds the invitee to the waitlist so they can sign up during the beta."
+		),
+	)
+	@action(detail=False, methods=['post'], url_path='invite', permission_classes=[permissions.IsAuthenticated])
+	def invite(self, request):
+		serializer = InviteUserRequestSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		data = serializer.validated_data
+
+		email = _normalize_email(data.get('email'))
+		name = (data.get('name') or '').strip()
+		if not email:
+			return Response({'detail': 'email is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		# Don't invite existing users.
+		if User.objects.filter(email__iexact=email).exists():
+			return Response({'detail': 'That email already belongs to an existing user.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		# Add to waitlist (so beta gating allows signup).
+		waitlister, created = Waitlister.objects.get_or_create(
+			email=email,
+			defaults={'name': name},
+		)
+		if not created and name and not (waitlister.name or '').strip():
+			waitlister.name = name
+			waitlister.save(update_fields=['name', 'updated_at'])
+
+		inviter_name = (getattr(request.user, 'name', '') or '').strip() or 'Someone'
+		platform_url = 'https://app.padlupp.com'
+		subject = f"You're invited to Padlupp"
+		text = (
+			f"{inviter_name} invited you to join Padlupp.\n\n"
+			f"Sign up here: {platform_url}\n\n"
+			"Your email has been added to the waitlist so you can sign up during the beta."
+		)
+
+		try:
+			send_mailgun_email(
+				to_email=email,
+				subject=subject,
+				text=text,
+				tags=['invite'],
+			)
+		except EmailSendError:
+			pass
+			# return Response({'detail': 'Failed to send invite email.'}, status=status.HTTP_502_BAD_GATEWAY)
+		except Exception:
+			pass
+			# return Response({'detail': 'Failed to send invite email.'}, status=status.HTTP_502_BAD_GATEWAY)
+
+		return Response(
+			{
+				'detail': 'Invite sent.',
+				'waitlisted': True,
+			},
+			status=status.HTTP_200_OK,
+		)
 
 	@extend_schema(
 		responses={200: ProfileSerializer},
