@@ -35,6 +35,7 @@ def send_mailgun_email(
     from_email = getattr(settings, 'MAILGUN_FROM_EMAIL', '')
 
     if not api_key or not domain or not from_email:
+        print("Mailgun email settings are not properly configured. Skipping email send.")
         raise EmailSendError('Mailgun is not configured (missing API key, domain, or from email).')
 
     url = f"{base_url}/{domain}/messages"
@@ -61,7 +62,17 @@ def send_mailgun_email(
             data=data_items,
             timeout=timeout_seconds,
         )
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            detail = (resp.text or '').strip()
+            msg = f"Mailgun HTTP {resp.status_code}"
+            if detail:
+                msg = f"{msg}: {detail}"
+            raise EmailSendError(msg) from exc
+    except EmailSendError:
+        logger.exception('Failed sending Mailgun email')
+        raise
     except Exception as exc:
         logger.exception('Failed sending Mailgun email')
         raise EmailSendError(str(exc)) from exc

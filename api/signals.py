@@ -127,6 +127,11 @@ def _notification_email_content(notification: Notification) -> tuple[str, str]:
             text = 'Your partner requested changes on a task. Open the app to see details.'
         return subject, text
 
+    if ntype == 'buddy_request_accepted':
+        subject = 'Connection request accepted'
+        text = 'Your connection request was accepted. Open the app to connect with them now.'
+        return subject, text
+
     subject = 'New notification'
     text = f"You have a new notification ({ntype or 'unknown'}). Open the app to view it."
     return subject, text

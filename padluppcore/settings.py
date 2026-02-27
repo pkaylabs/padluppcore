@@ -4,10 +4,13 @@ import os
 from dotenv import load_dotenv
 from datetime import timedelta
 
-load_dotenv()
-
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load environment variables from .env.
+# Note: Some setups keep .env at repo root (BASE_DIR/.env), others next to settings (padluppcore/.env).
+load_dotenv(BASE_DIR / '.env')
+load_dotenv(Path(__file__).resolve().parent / '.env')
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure-#v!3(v3lc@y(yu)u@8vhp5gf2jg2hgn9-qpff#-9gar#$u)+oh'

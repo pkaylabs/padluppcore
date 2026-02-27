@@ -220,6 +220,27 @@ class BuddyViewSet(viewsets.ViewSet):
 			buddy_request.message = message
 			buddy_request.save(update_fields=['status', 'responded_at', 'message', 'updated_at'])
 
+		# Best-effort email notification to recipient.
+		to_email = (getattr(to_user, 'preferred_notification_email', None) or getattr(to_user, 'email', '') or '').strip()
+		if to_email:
+			from_name = (getattr(from_user, 'name', '') or '').strip() or 'Someone'
+			platform_url = 'https://app.padlupp.com'
+			subject = 'New connection request on Padlupp'
+			text = f"{from_name} sent you a connection request on Padlupp.\n\n"
+			if message:
+				text += f"Message: {message}\n\n"
+			text += f"Open the app to respond: {platform_url}"
+			try:
+				send_mailgun_email(
+					to_email=to_email,
+					subject=subject,
+					text=text,
+					tags=['buddy_request'],
+				)
+			except Exception:
+				# Best-effort only: don't block the request on email issues.
+				pass
+
 		return Response(BuddyRequestSerializer(buddy_request, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
 
@@ -265,6 +286,13 @@ class BuddyViewSet(viewsets.ViewSet):
 		conversation, _ = Conversation.objects.get_or_create(partnership=partnership)
 		# Notify both users' conversations websockets so the new conversation appears.
 		self._broadcast_conversation_update(conversation_id=conversation.id, user_ids=[user_a.id, user_b.id])
+
+		# Notify requester that their connection request was accepted.
+		Notification.objects.create(
+			user=buddy_request.from_user,
+			type='buddy_request_accepted',
+			payload={'partner_id': buddy_request.to_user_id, 'partnership_id': partnership.id},
+		)
 
 		return Response({'detail': 'Accepted.', 'partnership_id': partnership.id}, status=status.HTTP_200_OK)
 

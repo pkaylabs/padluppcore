@@ -12,12 +12,13 @@ from django.utils import timezone
 from datetime import datetime, timezone as dt_timezone
 
 from accounts.models import User
-from api.models import BuddyRequest, Partnership, Profile, Conversation, Message, Goal, Task, TimerSession, Evidence, Waitlister
+from api.models import BuddyRequest, Partnership, Profile, Conversation, Message, Goal, Task, TimerSession, Evidence, Notification, Waitlister
 from api.serializers import UserSerializer, MessageSerializer
 from api.consumers import _ScopeRequest
 from django.core.files.uploadedfile import SimpleUploadedFile
 
 
+@override_settings(EMAIL_NOTIFICATIONS_ENABLED=False)
 class BuddyEndpointsTests(APITestCase):
 	def _mk_user(self, *, email: str, phone: str, name: str, password: str = 'pass1234'):
 		user = User(email=email, phone=phone, name=name)
@@ -38,12 +39,14 @@ class BuddyEndpointsTests(APITestCase):
 
 		self.client.force_authenticate(user=self.user)
 
-	def test_connect_and_invitations_accept_flow_creates_partnership(self):
+	@patch('api.viewsets.send_mailgun_email')
+	def test_connect_and_invitations_accept_flow_creates_partnership(self, mock_send_mailgun_email):
 		connect_url = reverse('buddies-connect')
 		resp = self.client.post(connect_url, data={'to_user': self.other.id, 'message': 'Hey, want to connect?'}, format='json')
 		self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
 		self.assertEqual(resp.data['status'], BuddyRequest.STATUS_PENDING)
 		self.assertEqual(resp.data['message'], 'Hey, want to connect?')
+		mock_send_mailgun_email.assert_called()
 
 		# Recipient sees it in invitations
 		self.client.force_authenticate(user=self.other)
@@ -60,10 +63,21 @@ class BuddyEndpointsTests(APITestCase):
 		self.assertEqual(accepted.status_code, status.HTTP_200_OK)
 		partnership_id = accepted.data.get('partnership_id')
 		self.assertIsNotNone(partnership_id)
+		self.assertTrue(Notification.objects.filter(user=self.user, type='buddy_request_accepted').exists())
 
 		# Partnership exists
 		user_a, user_b = sorted([self.user, self.other], key=lambda u: u.id)
 		self.assertTrue(Partnership.objects.filter(user_a=user_a, user_b=user_b).exists())
+
+	@patch('api.viewsets.send_mailgun_email')
+	def test_connect_sends_connection_request_email(self, mock_send_mailgun_email):
+		connect_url = reverse('buddies-connect')
+		resp = self.client.post(connect_url, data={'to_user': self.other.id, 'message': 'Yo'}, format='json')
+		self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+		mock_send_mailgun_email.assert_called()
+		called_kwargs = mock_send_mailgun_email.call_args.kwargs
+		self.assertEqual(called_kwargs.get('to_email'), self.other.email)
+		self.assertIn('https://app.padlupp.com', called_kwargs.get('text', ''))
 
 	def test_reject_removes_from_invitations(self):
 		BuddyRequest.objects.create(from_user=self.user, to_user=self.other)
