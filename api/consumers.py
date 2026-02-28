@@ -95,7 +95,10 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
         await self.send_json({'type': 'conversation_update', 'conversation': payload})
 
     async def send_json(self, payload: dict):
-        await self.send(text_data=json.dumps(payload))
+        try:
+            await self.send(text_data=json.dumps(payload))
+        except Exception:
+            pass
 
     @database_sync_to_async
     def get_user_conversations_payload(self, user_id: int):
@@ -495,19 +498,34 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps(event['message']))
 
     async def chat_typing(self, event):
-        await self.send_json({'type': 'typing', 'user_id': event['user_id'], 'is_typing': event['is_typing']})
+        try:
+            await self.send_json({'type': 'typing', 'user_id': event['user_id'], 'is_typing': event['is_typing']})
+        except Exception:
+            pass
 
     async def chat_presence(self, event):
-        await self.send_json({'type': 'presence', 'online_user_ids': event['online_user_ids']})
+        try:
+            await self.send_json({'type': 'presence', 'online_user_ids': event['online_user_ids']})
+        except Exception:
+            pass
 
     async def chat_delivered(self, event):
-        await self.send_json({'type': 'delivered', 'message_id': event['message_id'], 'by_user_id': event['by_user_id']})
+        try:
+            await self.send_json({'type': 'delivered', 'message_id': event['message_id'], 'by_user_id': event['by_user_id']})
+        except Exception:
+            pass
 
     async def chat_read(self, event):
-        await self.send_json({'type': 'read', 'message_ids': event['message_ids'], 'by_user_id': event['by_user_id']})
+        try:
+            await self.send_json({'type': 'read', 'message_ids': event['message_ids'], 'by_user_id': event['by_user_id']})
+        except Exception:
+            pass
 
     async def chat_read_all(self, event):
-        await self.send_json({'type': 'read_all', 'by_user_id': event['by_user_id']})
+        try:
+            await self.send_json({'type': 'read_all', 'by_user_id': event['by_user_id']})
+        except Exception:
+            pass
 
     async def send_json(self, payload: dict):
         await self.send(text_data=json.dumps(payload))
