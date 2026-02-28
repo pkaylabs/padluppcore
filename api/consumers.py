@@ -1,7 +1,11 @@
+import base64
+import binascii
 import json
 from urllib.parse import parse_qs
 
 from django.conf import settings
+from django.core.files.base import ContentFile
+from django.utils.text import get_valid_filename
 
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
@@ -169,6 +173,7 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
 class ChatConsumer(AsyncWebsocketConsumer):
     HISTORY_LIMIT = 50
     PRESENCE_TTL_SECONDS = 60
+    DEFAULT_MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25MB
 
     async def connect(self):
         self.conversation_id = self.scope['url_route']['kwargs']['conversation_id']
@@ -189,6 +194,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
+
+        # Pending metadata for a binary-frame upload (set by client via {"type":"file_meta",...}).
+        self._pending_file_meta = None
 
         # Presence tracking (best-effort)
         await self.set_user_online(user.id, self.conversation_id, True)
@@ -215,7 +223,67 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.broadcast_presence()
         await self.channel_layer.group_discard(self.group_name, self.channel_name)
 
+    def _max_upload_bytes(self) -> int:
+        try:
+            v = int(getattr(settings, 'CHAT_UPLOAD_MAX_BYTES', self.DEFAULT_MAX_UPLOAD_BYTES))
+            return v if v > 0 else self.DEFAULT_MAX_UPLOAD_BYTES
+        except Exception:
+            return self.DEFAULT_MAX_UPLOAD_BYTES
+
+    def _is_allowed_upload_mime(self, mime: str) -> bool:
+        mime = (mime or '').strip().lower()
+        return mime.startswith('image/') or mime.startswith('video/')
+
+    def _sanitize_filename(self, filename: str, fallback: str = 'upload.bin') -> str:
+        name = (filename or '').strip()
+        if not name:
+            return fallback
+        # Prevent path traversal and keep it reasonably clean.
+        name = name.replace('\\', '/').split('/')[-1]
+        name = get_valid_filename(name)
+        return name or fallback
+
     async def receive(self, text_data=None, bytes_data=None):
+        user = self.scope.get('user')
+        if not user or not getattr(user, 'is_authenticated', False):
+            return
+
+        # Binary frame upload (requires prior file_meta message).
+        if bytes_data is not None:
+            meta = getattr(self, '_pending_file_meta', None)
+            if not meta:
+                return
+            self._pending_file_meta = None
+
+            max_bytes = self._max_upload_bytes()
+            if len(bytes_data) > max_bytes:
+                await self.send_json({'type': 'error', 'error': 'file_too_large', 'max_bytes': max_bytes})
+                return
+
+            filename = self._sanitize_filename(meta.get('filename'), fallback='upload.bin')
+            content_type = (meta.get('content_type') or '').strip().lower()
+            caption = (meta.get('text') or '').strip()
+            if not self._is_allowed_upload_mime(content_type):
+                await self.send_json({'type': 'error', 'error': 'unsupported_content_type'})
+                return
+
+            content = ContentFile(bytes_data, name=filename)
+            message = await self.create_message(
+                user.id,
+                self.conversation_id,
+                caption,
+                attachment=content,
+                attachment_name=filename,
+                attachment_mime=content_type,
+                attachment_size=len(bytes_data),
+            )
+            serialized = MessageSerializer(message, context={'request': self.serializer_request}).data
+
+            await self.send_json({'type': 'ack', 'ack': 'received', 'message_id': message.id})
+            await self.channel_layer.group_send(self.group_name, {'type': 'chat.message', 'message': serialized})
+            await self.broadcast_conversation_updates()
+            return
+
         if not text_data:
             return
 
@@ -225,10 +293,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
             return
 
         msg_type = data.get('type') or 'message'
-
-        user = self.scope.get('user')
-        if not user or not getattr(user, 'is_authenticated', False):
-            return
 
         # Default: create a message from text.
         if msg_type == 'message':
@@ -250,6 +314,67 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 },
             )
             await self.broadcast_conversation_updates()
+            return
+
+        # File upload via base64 payload (images/videos).
+        # Client -> Server:
+        # {"type":"file","filename":"pic.jpg","content_type":"image/jpeg","data":"<base64>","text":"optional caption"}
+        if msg_type == 'file':
+            b64 = (data.get('data') or '').strip()
+            filename = self._sanitize_filename(data.get('filename'), fallback='upload.bin')
+            content_type = (data.get('content_type') or '').strip().lower()
+            caption = (data.get('text') or '').strip()
+            if not b64 or not content_type:
+                await self.send_json({'type': 'error', 'error': 'missing_fields'})
+                return
+            if not self._is_allowed_upload_mime(content_type):
+                await self.send_json({'type': 'error', 'error': 'unsupported_content_type'})
+                return
+
+            try:
+                raw = base64.b64decode(b64, validate=True)
+            except (binascii.Error, ValueError):
+                await self.send_json({'type': 'error', 'error': 'invalid_base64'})
+                return
+
+            max_bytes = self._max_upload_bytes()
+            if len(raw) > max_bytes:
+                await self.send_json({'type': 'error', 'error': 'file_too_large', 'max_bytes': max_bytes})
+                return
+
+            content = ContentFile(raw, name=filename)
+            message = await self.create_message(
+                user.id,
+                self.conversation_id,
+                caption,
+                attachment=content,
+                attachment_name=filename,
+                attachment_mime=content_type,
+                attachment_size=len(raw),
+            )
+            serialized = MessageSerializer(message, context={'request': self.serializer_request}).data
+
+            await self.send_json({'type': 'ack', 'ack': 'received', 'message_id': message.id})
+            await self.channel_layer.group_send(self.group_name, {'type': 'chat.message', 'message': serialized})
+            await self.broadcast_conversation_updates()
+            return
+
+        # Two-step binary upload:
+        # 1) client sends metadata:
+        #    {"type":"file_meta","filename":"clip.mp4","content_type":"video/mp4","text":"optional"}
+        # 2) client sends a single binary websocket frame with the file bytes.
+        if msg_type == 'file_meta':
+            filename = self._sanitize_filename(data.get('filename'), fallback='upload.bin')
+            content_type = (data.get('content_type') or '').strip().lower()
+            caption = (data.get('text') or '').strip()
+            if not content_type or not filename:
+                await self.send_json({'type': 'error', 'error': 'missing_fields'})
+                return
+            if not self._is_allowed_upload_mime(content_type):
+                await self.send_json({'type': 'error', 'error': 'unsupported_content_type'})
+                return
+            self._pending_file_meta = {'filename': filename, 'content_type': content_type, 'text': caption}
+            await self.send_json({'type': 'ack', 'ack': 'ready_for_binary'})
             return
 
         # Typing indicator
@@ -426,10 +551,28 @@ class ChatConsumer(AsyncWebsocketConsumer):
         return user_id in [conv.partnership.user_a_id, conv.partnership.user_b_id]
 
     @database_sync_to_async
-    def create_message(self, user_id, conversation_id, text):
+    def create_message(
+        self,
+        user_id,
+        conversation_id,
+        text,
+        *,
+        attachment=None,
+        attachment_name: str = '',
+        attachment_mime: str = '',
+        attachment_size: int | None = None,
+    ):
         user = User.objects.get(id=user_id)
         conversation = Conversation.objects.get(id=conversation_id)
-        return Message.objects.create(conversation=conversation, sender=user, text=text)
+        return Message.objects.create(
+            conversation=conversation,
+            sender=user,
+            text=text or '',
+            attachment=attachment,
+            attachment_name=attachment_name or '',
+            attachment_mime=attachment_mime or '',
+            attachment_size=attachment_size,
+        )
 
     @database_sync_to_async
     def get_message_history(self, conversation_id, limit: int = 50):

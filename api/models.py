@@ -165,7 +165,11 @@ class Conversation(TimeStampedModel):
 class Message(TimeStampedModel):
 	conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name='messages')
 	sender = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='messages')
-	text = models.TextField()
+	text = models.TextField(blank=True, default='')
+	attachment = models.FileField(upload_to='chat_attachments/', null=True, blank=True)
+	attachment_name = models.CharField(max_length=255, blank=True, default='')
+	attachment_mime = models.CharField(max_length=100, blank=True, default='')
+	attachment_size = models.PositiveIntegerField(null=True, blank=True)
 	is_read = models.BooleanField(default=False)
 
 

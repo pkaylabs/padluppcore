@@ -250,3 +250,6 @@ GOOGLE_OAUTH2_CLIENT_ID = os.getenv('GOOGLE_OAUTH2_CLIENT_ID', '')
 # Set env var BETA_WAITLIST_ONLY=0 to disable.
 BETA_WAITLIST_ONLY = os.getenv('BETA_WAITLIST_ONLY', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
 
+# Use BigAutoField for implicit primary keys (keeps migrations stable).
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+

@@ -349,11 +349,15 @@ class MessageSerializer(serializers.ModelSerializer):
 			'conversation',
 			'sender',
 			'text',
+			'attachment',
+			'attachment_name',
+			'attachment_mime',
+			'attachment_size',
 			'is_read',
 			'created_at',
 			'updated_at',
 		]
-		read_only_fields = ['sender', 'is_read']
+		read_only_fields = ['sender', 'is_read', 'attachment', 'attachment_name', 'attachment_mime', 'attachment_size']
 
 
 class ConversationSerializer(serializers.ModelSerializer):
