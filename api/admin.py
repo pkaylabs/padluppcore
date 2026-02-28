@@ -4,7 +4,9 @@ from .models import (
 	Profile,
 	Goal,
 	Partnership,
+	Event,
 	Match,
+	BuddyRequest,
 	Task,
 	SubTask,
 	TimerSession,
@@ -41,6 +43,30 @@ class MatchAdmin(admin.ModelAdmin):
 	list_display = ('id', 'from_user', 'to_user', 'action', 'created_at')
 	search_fields = ('from_user__email', 'to_user__email')
 	list_filter = ('action',)
+
+
+@admin.register(BuddyRequest)
+class BuddyRequestAdmin(admin.ModelAdmin):
+	list_display = ('id', 'from_user', 'to_user', 'status', 'responded_at', 'created_at')
+	search_fields = ('from_user__email', 'to_user__email', 'message')
+	list_filter = ('status',)
+
+
+@admin.register(Event)
+class EventAdmin(admin.ModelAdmin):
+	list_display = (
+		'id',
+		'title',
+		'start_date',
+		'start_time',
+		'end_date',
+		'end_time',
+		'creator',
+		'reminder_sent',
+		'created_at',
+	)
+	search_fields = ('title', 'creator__email')
+	list_filter = ('reminder_sent', 'start_date', 'end_date')
 
 
 @admin.register(Task)
