@@ -17,8 +17,10 @@ class Profile(TimeStampedModel):
 	communication_styles = models.JSONField(default=list, blank=True)
 
 
+
 class Goal(TimeStampedModel):
 	user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='goals')
+	partnership = models.ForeignKey('Partnership', on_delete=models.CASCADE, related_name='goals', null=True, blank=True, help_text='If set, this goal is shared with the partnership.')
 	title = models.CharField(max_length=255)
 	description = models.TextField(blank=True)
 	start_date = models.DateField(null=True, blank=True)

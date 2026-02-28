@@ -203,13 +203,21 @@ class LongestStreakResponseSerializer(serializers.Serializer):
 	current_streak_count = serializers.IntegerField()
 
 
+
+
+
 class GoalSerializer(serializers.ModelSerializer):
 	user = UserSerializer(read_only=True)
+	partnership = serializers.SerializerMethodField(read_only=True)
+	conversation = serializers.PrimaryKeyRelatedField(queryset=Conversation.objects.all(), required=False, allow_null=True, write_only=True)
+
 	class Meta:
 		model = Goal
 		fields = [
 			'id',
 			'user',
+			'partnership',
+			'conversation',
 			'title',
 			'description',
 			'start_date',
@@ -219,7 +227,10 @@ class GoalSerializer(serializers.ModelSerializer):
 			'created_at',
 			'updated_at',
 		]
-		read_only_fields = ['user']
+		read_only_fields = ['user', 'partnership']
+
+	def get_partnership(self, obj):
+		return obj.partnership_id if obj.partnership_id else None
 
 
 class PartnershipSerializer(serializers.ModelSerializer):

@@ -1101,15 +1101,38 @@ class AuthViewSet(viewsets.ViewSet):
 		return Response({'detail': 'Deletion request received.'}, status=status.HTTP_201_CREATED)
 
 
+
 class GoalViewSet(viewsets.ModelViewSet):
 	serializer_class = GoalSerializer
 	permission_classes = [permissions.IsAuthenticated]
 
 	def get_queryset(self):
-		return Goal.objects.filter(user=self.request.user).order_by('-created_at')
+		user = self.request.user
+		# Get all goals where user is owner OR is in the partnership
+		return Goal.objects.filter(
+			models.Q(user=user) |
+			models.Q(partnership__user_a=user) |
+			models.Q(partnership__user_b=user)
+		).order_by('-created_at')
+
 
 	def perform_create(self, serializer):
-		serializer.save(user=self.request.user)
+		conversation = serializer.validated_data.pop('conversation', None)
+		partnership = None
+		if conversation:
+			partnership = getattr(conversation, 'partnership', None)
+		serializer.save(user=self.request.user, partnership=partnership)
+
+	def perform_update(self, serializer):
+		# Only allow update if user is owner or in the partnership
+		goal = self.get_object()
+		user = self.request.user
+		if goal.user == user or (
+			goal.partnership and (goal.partnership.user_a == user or goal.partnership.user_b == user)
+		):
+			serializer.save()
+		else:
+			raise PermissionDenied("You do not have permission to update this goal.")
 
 
 class PartnershipViewSet(viewsets.ModelViewSet):
@@ -1666,8 +1689,14 @@ class StatsViewSet(viewsets.ViewSet):
 			if d:
 				active_dates.add(d)
 
+
+		# Include goals owned by user or partnership goals where user is a partner
 		for created_at, updated_at in (
-			Goal.objects.filter(user=user)
+			Goal.objects.filter(
+				models.Q(user=user) |
+				models.Q(partnership__user_a=user) |
+				models.Q(partnership__user_b=user)
+			)
 			.values_list('created_at', 'updated_at')
 			.iterator()
 		):
