@@ -829,12 +829,15 @@ class AuthViewSet(viewsets.ViewSet):
 			waitlister.save(update_fields=['name', 'updated_at'])
 
 		inviter_name = (getattr(request.user, 'name', '') or '').strip() or 'Someone'
-		platform_url = 'https://app.padlupp.com'
-		subject = f"You're invited to Padlupp"
+		platform_url = 'https://app.padlupp.com/'
+		subject = "You're invited to Padlupp"
 		text = (
-			f"{inviter_name} invited you to join Padlupp.\n\n"
-			f"Sign up here: {platform_url}\n\n"
-			"Your email has been added to the waitlist so you can sign up during the beta."
+			f"Hello {name}\n\n"
+			f"{inviter_name} invited you to join Padlupp - they thought you’d benefit from having an accountability partner.\n\n"
+			"Ready to join them?\n"
+			f"{platform_url}\n\n"
+			"Thanks,\n"
+			"The Padlupp Team"
 		)
 
 		try:
