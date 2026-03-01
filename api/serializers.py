@@ -164,6 +164,7 @@ class ProfileSerializer(serializers.ModelSerializer):
 	user = UserSerializer(read_only=True)
 	interests = CommaSeparatedListField(required=False)
 	compatibility_score = serializers.SerializerMethodField()
+	rating = serializers.SerializerMethodField()
 
 	class Meta:
 		model = Profile
@@ -181,6 +182,7 @@ class ProfileSerializer(serializers.ModelSerializer):
 			'created_at',
 			'updated_at',
 			'compatibility_score',
+			'rating',
 		]
 
 	@extend_schema_field(serializers.IntegerField(allow_null=True))
@@ -189,6 +191,13 @@ class ProfileSerializer(serializers.ModelSerializer):
 		import random
 		score = random.randint(50, 90)
 		return score
+	
+	@extend_schema_field(serializers.FloatField(allow_null=True))
+	def get_rating(self, obj):
+		# Placeholder: in a real implementation, calculate based on user feedback.
+		import random
+		rating = round(random.uniform(3.0, 5.0), 1)
+		return rating
 
 
 class UserProfileResponseSerializer(serializers.Serializer):
@@ -479,9 +488,10 @@ class BuddyFinderProfileSerializer(ProfileSerializer):
 	connection_status = serializers.SerializerMethodField()
 	buddy_request_id = serializers.SerializerMethodField()
 	compatibility_score = serializers.SerializerMethodField()
+	rating = serializers.SerializerMethodField()
 
 	class Meta(ProfileSerializer.Meta):
-		fields = ProfileSerializer.Meta.fields + ['connection_status', 'buddy_request_id', 'compatibility_score']
+		fields = ProfileSerializer.Meta.fields + ['connection_status', 'buddy_request_id', 'compatibility_score', 'rating']
 
 	@extend_schema_field(serializers.CharField())
 	def get_connection_status(self, obj):
@@ -498,6 +508,12 @@ class BuddyFinderProfileSerializer(ProfileSerializer):
 		import random
 		score = random.randint(50, 90)  # Placeholder: replace with real compatibility logic
 		return score
+	
+	@extend_schema_field(serializers.FloatField(allow_null=True))
+	def get_rating(self, obj):
+		import random
+		rating = round(random.uniform(3.0, 5.0), 1)  # Placeholder: replace with real rating logic
+		return rating
 
 
 class BuddyConnectSerializer(serializers.Serializer):
