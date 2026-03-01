@@ -9,6 +9,7 @@ from channels.layers import get_channel_layer
 from knox.models import AuthToken
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, MultiPartParser
 from drf_spectacular.utils import OpenApiParameter, OpenApiTypes, extend_schema
 from rest_framework.response import Response
@@ -444,13 +445,13 @@ class EventViewSet(viewsets.ModelViewSet):
 		'''Only the creator can update the event.'''
 		instance = self.get_object()
 		if instance.creator_id != self.request.user.id:
-			raise permissions.PermissionDenied('Only the creator can update this event.')
+			raise PermissionDenied('Only the creator can update this event.')
 		serializer.save()
 
 	def perform_destroy(self, instance):
 		'''Only the creator can delete the event.'''
 		if instance.creator_id != self.request.user.id:
-			raise permissions.PermissionDenied('Only the creator can delete this event.')
+			raise PermissionDenied('Only the creator can delete this event.')
 		instance.delete()
 
 	@extend_schema(
@@ -1236,18 +1237,62 @@ class TaskViewSet(viewsets.ModelViewSet):
 	permission_classes = [permissions.IsAuthenticated]
 
 	def get_queryset(self):
-		return Task.objects.filter(owner=self.request.user).order_by('-created_at')
+		user = self.request.user
+		return (
+			Task.objects.filter(
+				models.Q(owner=user)
+				| models.Q(partnership__user_a=user)
+				| models.Q(partnership__user_b=user)
+				| models.Q(goal__user=user)
+				| models.Q(goal__partnership__user_a=user)
+				| models.Q(goal__partnership__user_b=user)
+			)
+			.distinct()
+			.order_by('-created_at')
+		)
+
+	def _assert_task_owner(self, task: Task):
+		if task.owner_id != self.request.user.id:
+			raise PermissionDenied('Only the task owner can modify this task.')
 
 	def perform_create(self, serializer):
-		task = serializer.save(owner=self.request.user)
+		user = self.request.user
+		goal = serializer.validated_data.get('goal')
+		partnership = serializer.validated_data.get('partnership')
+
+		# Validate that the user can create a task for this goal.
+		goal_partnership = getattr(goal, 'partnership', None)
+		in_goal_partnership = bool(
+			goal_partnership
+			and user.id in [goal_partnership.user_a_id, goal_partnership.user_b_id]
+		)
+		if goal.user_id != user.id and not in_goal_partnership:
+			raise ValidationError({'goal': 'You do not have access to this goal.'})
+
+		# Validate any explicit partnership, and default to goal.partnership when present.
+		if partnership and user.id not in [partnership.user_a_id, partnership.user_b_id]:
+			raise ValidationError({'partnership': 'You are not a member of this partnership.'})
+		if partnership and goal_partnership and partnership.id != goal_partnership.id:
+			raise ValidationError({'partnership': 'Partnership must match the goal partnership.'})
+		effective_partnership = partnership or goal_partnership
+
+		task = serializer.save(owner=user, partnership=effective_partnership)
 		# Notify partner (if any) about new task
 		if task.partnership:
-			partner = task.partnership.user_a if task.partnership.user_b == self.request.user else task.partnership.user_b
+			partner = task.partnership.user_a if task.partnership.user_b == user else task.partnership.user_b
 			Notification.objects.create(
 				user=partner,
 				type='new_task',
 				payload={'task_id': task.id, 'title': task.title},
 			)
+
+	def perform_update(self, serializer):
+		# self._assert_task_owner(self.get_object())
+		serializer.save()
+
+	def perform_destroy(self, instance):
+		# self._assert_task_owner(instance)
+		instance.delete()
 
 	@extend_schema(
 		responses={201: TimerSessionSerializer},

@@ -276,6 +276,80 @@ class StatsEndpointsTests(APITestCase):
 		Evidence.objects.filter(id=evidence.id).update(submitted_at=d2)
 
 
+class TaskVisibilityTests(APITestCase):
+	def _mk_user(self, *, email: str, phone: str, name: str, password: str = 'pass1234'):
+		user = User(email=email, phone=phone, name=name)
+		user.set_password(password)
+		user.save()
+		return user
+
+	def _results(self, resp):
+		# DRF pagination is enabled globally; handle both paginated and non-paginated.
+		return resp.data.get('results', resp.data)
+
+	def setUp(self):
+		self.owner = self._mk_user(email='owner@test.com', name='Owner', phone='+10000000031')
+		self.partner = self._mk_user(email='partner@test.com', name='Partner', phone='+10000000032')
+		self.stranger = self._mk_user(email='stranger@test.com', name='Stranger', phone='+10000000033')
+
+		user_a, user_b = sorted([self.owner, self.partner], key=lambda u: u.id)
+		self.partnership = Partnership.objects.create(user_a=user_a, user_b=user_b)
+
+		self.shared_goal = Goal.objects.create(user=self.owner, partnership=self.partnership, title='Shared Goal')
+		self.private_goal = Goal.objects.create(user=self.owner, title='Private Goal')
+
+		# Task visible to partner via goal partnership (task.partnership left NULL intentionally).
+		self.task_via_goal_partnership = Task.objects.create(
+			goal=self.shared_goal,
+			owner=self.owner,
+			title='Task A',
+		)
+		# Task visible to partner via explicit task partnership.
+		self.task_via_task_partnership = Task.objects.create(
+			goal=self.private_goal,
+			partnership=self.partnership,
+			owner=self.owner,
+			title='Task B',
+		)
+
+	def test_partner_can_list_and_retrieve_shared_tasks(self):
+		self.client.force_authenticate(user=self.partner)
+		list_url = reverse('tasks-list')
+		resp = self.client.get(list_url)
+		self.assertEqual(resp.status_code, status.HTTP_200_OK)
+		ids = {row['id'] for row in self._results(resp)}
+		self.assertIn(self.task_via_goal_partnership.id, ids)
+		self.assertIn(self.task_via_task_partnership.id, ids)
+
+		detail_url = reverse('tasks-detail', kwargs={'pk': self.task_via_goal_partnership.id})
+		detail = self.client.get(detail_url)
+		self.assertEqual(detail.status_code, status.HTTP_200_OK)
+		self.assertEqual(detail.data['id'], self.task_via_goal_partnership.id)
+
+	def test_partner_cannot_modify_task_via_default_update(self):
+		self.client.force_authenticate(user=self.partner)
+		detail_url = reverse('tasks-detail', kwargs={'pk': self.task_via_goal_partnership.id})
+		resp = self.client.patch(detail_url, data={'title': 'Hacked'}, format='json')
+		self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+	def test_stranger_cannot_see_partner_tasks(self):
+		self.client.force_authenticate(user=self.stranger)
+		list_url = reverse('tasks-list')
+		resp = self.client.get(list_url)
+		self.assertEqual(resp.status_code, status.HTTP_200_OK)
+		ids = {row['id'] for row in self._results(resp)}
+		self.assertNotIn(self.task_via_goal_partnership.id, ids)
+		self.assertNotIn(self.task_via_task_partnership.id, ids)
+
+	def test_cannot_create_task_for_inaccessible_goal(self):
+		self.client.force_authenticate(user=self.partner)
+		list_url = reverse('tasks-list')
+		payload = {'goal': self.private_goal.id, 'title': 'Nope'}
+		resp = self.client.post(list_url, data=payload, format='json')
+		self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+		self.assertIn('goal', resp.data)
+
+
 class ForgotPasswordFlowTests(APITestCase):
 	def _mk_user(self, *, email: str, phone: str, name: str, password: str = 'pass1234'):
 		user = User(email=email, phone=phone, name=name)

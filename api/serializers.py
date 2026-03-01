@@ -292,6 +292,7 @@ class TaskSerializer(serializers.ModelSerializer):
 			'partnership',
 			'owner',
 			'title',
+			'completed',
 			'description',
 			'due_at',
 			'status',
