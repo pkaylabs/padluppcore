@@ -13,7 +13,7 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from drf_spectacular.utils import OpenApiParameter, OpenApiTypes, extend_schema
 from rest_framework.response import Response
 
-from datetime import timedelta
+from datetime import timedelta, datetime
 from zoneinfo import ZoneInfo
 from django.utils import timezone
 
@@ -95,6 +95,19 @@ def _generate_password_reset_otp() -> str:
 def _generate_password_reset_token() -> str:
 	# High-entropy token returned once to the client.
 	return secrets.token_urlsafe(32)
+
+
+def _set_last_login(user: User, at: datetime | None = None) -> datetime:
+	"""Persist last_login for token-based auth flows.
+
+	Django updates `last_login` when using `django.contrib.auth.login()`, but this
+	codebase uses token auth (Knox) and `authenticate()` directly.
+	"""
+	now = at or timezone.now()
+	User.objects.filter(pk=user.pk).update(last_login=now)
+	# Keep in-memory object consistent for the current request.
+	user.last_login = now
+	return now
 
 
 class BuddyViewSet(viewsets.ViewSet):
@@ -517,6 +530,7 @@ class OnboardingViewSet(viewsets.ViewSet):
 		user = User.objects.create_user(email=email, password=password, name=name, phone=phone)
 		Profile.objects.get_or_create(user=user)
 		# auto-login after registration
+		_set_last_login(user)
 		token = AuthToken.objects.create(user)[1]
 		return Response({'user': UserSerializer(user, context={'request': request}).data, 'token': token}, status=status.HTTP_201_CREATED)
 
@@ -668,7 +682,7 @@ class AuthViewSet(viewsets.ViewSet):
 		user = authenticate(request, email=email, password=password)
 		if not user:
 			return Response({'detail': 'Invalid credentials.'}, status=status.HTTP_400_BAD_REQUEST)
-
+		_set_last_login(user)
 		token = AuthToken.objects.create(user)[1]
 		return Response({'user': UserSerializer(user, context={'request': request}).data, 'token': token}, status=status.HTTP_200_OK)
 
@@ -957,7 +971,7 @@ class AuthViewSet(viewsets.ViewSet):
 		if payload.get('email_verified') and not user.email_verified:
 			user.email_verified = True
 			user.save(update_fields=['email_verified'])
-
+		_set_last_login(user)
 		token = AuthToken.objects.create(user)[1]
 		return Response({'user': UserSerializer(user, context={'request': request}).data, 'token': token}, status=status.HTTP_200_OK)
 
@@ -1012,7 +1026,7 @@ class AuthViewSet(viewsets.ViewSet):
 			user.email_verified = True
 		user.save()
 		Profile.objects.get_or_create(user=user)
-
+		_set_last_login(user)
 		token = AuthToken.objects.create(user)[1]
 		return Response({'user': UserSerializer(user, context={'request': request}).data, 'token': token}, status=status.HTTP_201_CREATED)
 
@@ -1071,7 +1085,7 @@ class AuthViewSet(viewsets.ViewSet):
 			if payload.get('email_verified') and not user.email_verified:
 				user.email_verified = True
 				user.save(update_fields=['email_verified'])
-
+		_set_last_login(user)
 		token = AuthToken.objects.create(user)[1]
 		resp_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
 		return Response({'user': UserSerializer(user, context={'request': request}).data, 'token': token}, status=resp_status)
@@ -1654,7 +1668,7 @@ class StatsViewSet(viewsets.ViewSet):
 			"Get the current user's streak stats (longest + current consecutive-day activity streak). "
 			"A day counts as active if the user has ANY of: "
 			"(1) a timer session started, (2) evidence submitted, (3) a task completed, "
-			"(4) a goal created/updated, (5) a message sent. "
+			"(4) a goal created/updated, (5) a message sent, (6) a login. "
 			"Day boundaries use the user's Profile.time_zone when available. "
 			"Current streak is the consecutive-day streak ending today (in the user's timezone)."
 		),
@@ -1664,6 +1678,11 @@ class StatsViewSet(viewsets.ViewSet):
 		user = request.user
 		tzinfo = self._get_user_tzinfo(user)
 		active_dates = set()
+
+		# Count login as activity so users can build a streak by showing up daily.
+		login_d = self._dt_to_local_date(getattr(user, 'last_login', None), tzinfo)
+		if login_d:
+			active_dates.add(login_d)
 
 		for started_at, created_at in (
 			TimerSession.objects.filter(user=user)

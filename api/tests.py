@@ -9,7 +9,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 from rest_framework.test import APIRequestFactory
 from django.utils import timezone
-from datetime import datetime, timezone as dt_timezone
+from datetime import datetime, timezone as dt_timezone, timedelta
 
 from accounts.models import User
 from api.models import BuddyRequest, Partnership, Profile, Conversation, Message, Goal, Task, TimerSession, Evidence, Notification, Waitlister
@@ -206,6 +206,39 @@ class StatsEndpointsTests(APITestCase):
 		self.user = self._mk_user(email='stats@test.com', name='Stats', phone='+10000000011')
 		Profile.objects.get_or_create(user=self.user, defaults={'time_zone': 'UTC'})
 		self.client.force_authenticate(user=self.user)
+
+	def test_longest_streak_counts_last_login(self):
+		url = reverse('stats-longest-streak')
+		fixed_now = datetime(2026, 1, 3, 15, 0, 0, tzinfo=dt_timezone.utc)
+
+		with patch('django.utils.timezone.now', return_value=fixed_now):
+			# No activity and no last_login -> all zeros.
+			self.user.last_login = None
+			self.user.save(update_fields=['last_login'])
+			self.client.force_authenticate(user=self.user)
+			resp0 = self.client.get(url)
+			self.assertEqual(resp0.status_code, status.HTTP_200_OK)
+			self.assertEqual(resp0.data.get('longest_streak_count'), 0)
+			self.assertEqual(resp0.data.get('current_streak_count'), 0)
+
+			# last_login yesterday -> longest=1, current=0 (since 'today' not active).
+			yesterday = fixed_now - timedelta(days=1)
+			self.user.last_login = yesterday
+			self.user.save(update_fields=['last_login'])
+			self.client.force_authenticate(user=self.user)
+			resp1 = self.client.get(url)
+			self.assertEqual(resp1.status_code, status.HTTP_200_OK)
+			self.assertEqual(resp1.data.get('longest_streak_count'), 1)
+			self.assertEqual(resp1.data.get('current_streak_count'), 0)
+
+			# last_login today -> longest=1, current=1.
+			self.user.last_login = fixed_now
+			self.user.save(update_fields=['last_login'])
+			self.client.force_authenticate(user=self.user)
+			resp2 = self.client.get(url)
+			self.assertEqual(resp2.status_code, status.HTTP_200_OK)
+			self.assertEqual(resp2.data.get('longest_streak_count'), 1)
+			self.assertEqual(resp2.data.get('current_streak_count'), 1)
 
 	def test_longest_streak_any_activity(self):
 		# Create activity on three consecutive days (UTC): 2026-01-01, 2026-01-02, 2026-01-03
