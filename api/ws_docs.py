@@ -62,7 +62,7 @@ class WebSocketDocsView(APIView):
 			"Server -> Client events (chat):\n"
 			"- New message: the serialized message dict (backward-compatible)\n"
 			"- Ack to sender: `{'type':'ack','ack':'received','message_id':<id>}`\n"
-			"- Typing: `{'type':'typing','user_id':<id>,'is_typing':<bool>}`\n"
+			"- Typing: `{'type':'typing','user_id':<id>,'user_name':<str>,'is_typing':<bool>}`\n"
 			"- Presence: `{'type':'presence','online_user_ids':[...]} `\n"
 			"  - Note: `online_user_ids` is conversation-scoped (only participants of this conversation who are currently connected to this conversation's chat socket).\n"
 			"- Delivered: `{'type':'delivered','message_id':<id>,'by_user_id':<id>}`\n"

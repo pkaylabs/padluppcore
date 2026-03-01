@@ -387,6 +387,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 {
                     'type': 'chat.typing',
                     'user_id': user.id,
+                    'user_name': getattr(user, 'name', None),
                     'is_typing': bool(data.get('is_typing', True)),
                 },
             )
@@ -499,7 +500,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def chat_typing(self, event):
         try:
-            await self.send_json({'type': 'typing', 'user_id': event['user_id'], 'is_typing': event['is_typing']})
+            await self.send_json(
+                {
+                    'type': 'typing',
+                    'user_id': event['user_id'],
+                    'user_name': event.get('user_name'),
+                    'is_typing': event['is_typing'],
+                }
+            )
         except Exception:
             pass
 
