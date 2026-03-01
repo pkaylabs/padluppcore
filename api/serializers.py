@@ -163,6 +163,7 @@ class CommaSeparatedListField(serializers.Field):
 class ProfileSerializer(serializers.ModelSerializer):
 	user = UserSerializer(read_only=True)
 	interests = CommaSeparatedListField(required=False)
+	compatibility_score = serializers.SerializerMethodField()
 
 	class Meta:
 		model = Profile
@@ -179,7 +180,15 @@ class ProfileSerializer(serializers.ModelSerializer):
 			'communication_styles',
 			'created_at',
 			'updated_at',
+			'compatibility_score',
 		]
+
+	@extend_schema_field(serializers.IntegerField(allow_null=True))
+	def get_compatibility_score(self, obj):
+		# Placeholder: in a real implementation, calculate based on profile data.
+		import random
+		score = random.randint(50, 90)
+		return score
 
 
 class UserProfileResponseSerializer(serializers.Serializer):
