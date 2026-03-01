@@ -23,6 +23,7 @@ class Goal(TimeStampedModel):
 	partnership = models.ForeignKey('Partnership', on_delete=models.CASCADE, related_name='goals', null=True, blank=True, help_text='If set, this goal is shared with the partnership.')
 	title = models.CharField(max_length=255)
 	category = models.CharField(max_length=100, blank=True)
+	importance = models.CharField(max_length=20, blank=True)
 	description = models.TextField(blank=True)
 	start_date = models.DateField(null=True, blank=True)
 	start_time = models.TimeField(null=True, blank=True)

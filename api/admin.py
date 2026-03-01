@@ -26,7 +26,7 @@ class ProfileAdmin(admin.ModelAdmin):
 
 @admin.register(Goal)
 class GoalAdmin(admin.ModelAdmin):
-	list_display = ('id', 'user', 'title', 'category', 'is_active', 'start_date',  'start_time', 'target_date')
+	list_display = ('id', 'user', 'title', 'category', 'importance',  'is_active', 'start_date',  'start_time', 'target_date')
 	search_fields = ('title', 'user__email', 'user__name')
 	list_filter = ('is_active',)
 

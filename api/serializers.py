@@ -220,6 +220,7 @@ class GoalSerializer(serializers.ModelSerializer):
 			'conversation',
 			'title',
 			'category',
+			'importance',
 			'description',
 			'start_date',
 			'start_time',
