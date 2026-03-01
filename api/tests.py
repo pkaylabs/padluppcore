@@ -195,6 +195,25 @@ class BuddyEndpointsTests(APITestCase):
 		self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
 
+@override_settings(BETA_WAITLIST_ONLY=False)
+class AuthLastLoginTests(APITestCase):
+	def test_login_updates_last_login(self):
+		user = User(email='lastlogin@test.com', phone='+10000000021', name='LL')
+		user.set_password('pass1234')
+		user.save()
+
+		self.assertIsNone(user.last_login)
+		url = reverse('auth-login')
+		fixed_now = datetime(2026, 1, 3, 15, 0, 0, tzinfo=dt_timezone.utc)
+
+		with patch('django.utils.timezone.now', return_value=fixed_now):
+			resp = self.client.post(url, data={'email': 'lastlogin@test.com', 'password': 'pass1234'}, format='json')
+
+		self.assertEqual(resp.status_code, status.HTTP_200_OK)
+		user.refresh_from_db()
+		self.assertEqual(user.last_login, fixed_now)
+
+
 class StatsEndpointsTests(APITestCase):
 	def _mk_user(self, *, email: str, phone: str, name: str, password: str = 'pass1234'):
 		user = User(email=email, phone=phone, name=name)
@@ -299,6 +318,7 @@ class ForgotPasswordFlowTests(APITestCase):
 		self.assertTrue(user.check_password('newpass123'))
 
 
+@override_settings(BETA_WAITLIST_ONLY=False)
 class GoogleAuthEndpointsTests(APITestCase):
 	def setUp(self):
 		# Ensure the setting is present for token audience verification.
@@ -338,15 +358,18 @@ class GoogleAuthEndpointsTests(APITestCase):
 		user = User.objects.create(email='me@test.com', name='Me', email_verified=False)
 		Profile.objects.get_or_create(user=user)
 		url = reverse('auth-google-signin')
+		fixed_now = datetime(2026, 1, 3, 15, 0, 0, tzinfo=dt_timezone.utc)
 
 		with patch('api.viewsets.google_id_token.verify_oauth2_token') as verify:
-			verify.return_value = {'email': 'me@test.com', 'email_verified': True, 'name': 'Me'}
-			resp = self.client.post(url, data={'id_token': 'dummy'}, format='json')
+			with patch('django.utils.timezone.now', return_value=fixed_now):
+				verify.return_value = {'email': 'me@test.com', 'email_verified': True, 'name': 'Me'}
+				resp = self.client.post(url, data={'id_token': 'dummy'}, format='json')
 
 		self.assertEqual(resp.status_code, status.HTTP_200_OK)
 		self.assertIn('token', resp.data)
 		user.refresh_from_db()
 		self.assertTrue(user.email_verified)
+		self.assertEqual(user.last_login, fixed_now)
 
 	def test_google_signin_rejects_nonexistent_user(self):
 		url = reverse('auth-google-signin')
