@@ -469,9 +469,10 @@ class BuddyFinderProfileSerializer(ProfileSerializer):
 	"""
 	connection_status = serializers.SerializerMethodField()
 	buddy_request_id = serializers.SerializerMethodField()
+	compatibility_score = serializers.SerializerMethodField()
 
 	class Meta(ProfileSerializer.Meta):
-		fields = ProfileSerializer.Meta.fields + ['connection_status', 'buddy_request_id']
+		fields = ProfileSerializer.Meta.fields + ['connection_status', 'buddy_request_id', 'compatibility_score']
 
 	@extend_schema_field(serializers.CharField())
 	def get_connection_status(self, obj):
@@ -482,6 +483,12 @@ class BuddyFinderProfileSerializer(ProfileSerializer):
 	def get_buddy_request_id(self, obj):
 		pending_request_id_by_to_user_id = self.context.get('pending_request_id_by_to_user_id', {})
 		return pending_request_id_by_to_user_id.get(obj.user_id)
+	
+	@extend_schema_field(serializers.IntegerField(allow_null=True))
+	def get_compatibility_score(self, obj):
+		import random
+		score = random.randint(50, 90)  # Placeholder: replace with real compatibility logic
+		return score
 
 
 class BuddyConnectSerializer(serializers.Serializer):
