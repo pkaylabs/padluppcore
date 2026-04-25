@@ -13,7 +13,7 @@ from django.utils import timezone
 from datetime import datetime, timezone as dt_timezone, timedelta
 
 from accounts.models import User
-from api.models import BuddyRequest, Partnership, Profile, Conversation, Message, Goal, Task, TimerSession, Evidence, Notification, UserDailyActivity, InactivityNudgeLog, Waitlister
+from api.models import BuddyRequest, Partnership, Profile, Conversation, Message, Goal, Task, TimerSession, Evidence, Notification, UserDailyActivity, InactivityNudgeLog, CheckinReminderLog, Waitlister
 from api.serializers import UserSerializer, MessageSerializer
 from api.consumers import _ScopeRequest
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -380,6 +380,62 @@ class InactivityNudgeEndpointTests(APITestCase):
 				user=inactive,
 				threshold_days=14,
 			).exists()
+		)
+
+
+class CheckinReminderCronEndpointTests(APITestCase):
+	def _mk_user(self, *, email: str, phone: str, name: str):
+		user = User(email=email, phone=phone, name=name)
+		user.set_password('pass1234')
+		user.save()
+		return user
+
+	@patch('api.views.send_mailgun_email')
+	def test_checkin_reminders_due_tomorrow_and_idempotent(self, mock_send_mailgun_email):
+		url = reverse('cron-checkin-reminders')
+		now = datetime(2026, 4, 25, 10, 0, 0, tzinfo=dt_timezone.utc)  # Saturday
+
+		owner = self._mk_user(email='owner-goal@test.com', phone='+10000000051', name='Owner')
+		partner = self._mk_user(email='partner-goal@test.com', phone='+10000000052', name='Partner')
+		partnership = Partnership.objects.create(user_a=owner, user_b=partner)
+
+		sunday_goal = Goal.objects.create(
+			user=owner,
+			partnership=partnership,
+			title='Sunday Checkin Goal',
+			checkin_frequency=Goal.CHECKIN_SUNDAYS,
+		)
+		three_day_goal = Goal.objects.create(
+			user=owner,
+			title='3 Day Goal',
+			checkin_frequency=Goal.CHECKIN_3_DAYS,
+		)
+
+		# Anchor three_day_goal so tomorrow is exactly on the cadence.
+		Goal.objects.filter(id=three_day_goal.id).update(created_at=now - timedelta(days=2))
+		three_day_goal.refresh_from_db()
+
+		with patch('django.utils.timezone.now', return_value=now):
+			resp1 = self.client.post(url)
+
+		self.assertEqual(resp1.status_code, status.HTTP_200_OK)
+		self.assertEqual(resp1.data['goals_due_tomorrow'], 2)
+		# sunday_goal -> owner + partner (2), three_day_goal -> owner (1)
+		self.assertEqual(resp1.data['emails_sent'], 3)
+		self.assertEqual(resp1.data['emails_failed'], 0)
+		self.assertEqual(mock_send_mailgun_email.call_count, 3)
+
+		with patch('django.utils.timezone.now', return_value=now):
+			resp2 = self.client.post(url)
+
+		self.assertEqual(resp2.status_code, status.HTTP_200_OK)
+		self.assertEqual(resp2.data['goals_due_tomorrow'], 2)
+		self.assertEqual(resp2.data['emails_sent'], 0)
+		self.assertEqual(resp2.data['emails_skipped'], 3)
+		self.assertEqual(mock_send_mailgun_email.call_count, 3)
+		self.assertEqual(
+			CheckinReminderLog.objects.filter(goal=sunday_goal, reminder_for_date=(now.date() + timedelta(days=1))).count(),
+			2,
 		)
 
 
