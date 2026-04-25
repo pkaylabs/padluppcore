@@ -3,6 +3,7 @@ from django.contrib import admin
 from .models import (
 	Profile,
 	Goal,
+	CheckinReminderLog,
 	Partnership,
 	Event,
 	Match,
@@ -10,10 +11,12 @@ from .models import (
 	Task,
 	SubTask,
 	TimerSession,
+	UserDailyActivity,
 	Evidence,
 	Notification,
     Conversation,
     Message,
+	InactivityNudgeLog,
 	Waitlister,
 )
 
@@ -26,7 +29,7 @@ class ProfileAdmin(admin.ModelAdmin):
 
 @admin.register(Goal)
 class GoalAdmin(admin.ModelAdmin):
-	list_display = ('id', 'user', 'title', 'category', 'importance',  'is_active', 'start_date',  'start_time', 'target_date')
+	list_display = ('id', 'user', 'title', 'category', 'importance', 'checkin_frequency', 'is_active', 'start_date', 'start_time', 'target_date')
 	search_fields = ('title', 'user__email', 'user__name')
 	list_filter = ('is_active',)
 
@@ -120,4 +123,25 @@ class MessageAdmin(admin.ModelAdmin):
 class WaitlisterAdmin(admin.ModelAdmin):
 	list_display = ('id', 'email', 'name', 'country', 'created_at')
 	search_fields = ('email', 'name', 'country')
+
+
+@admin.register(InactivityNudgeLog)
+class InactivityNudgeLogAdmin(admin.ModelAdmin):
+	list_display = ('id', 'user', 'latest_activity_at', 'threshold_days', 'created_at')
+	search_fields = ('user__email', 'user__name')
+	list_filter = ('threshold_days', 'created_at')
+
+
+@admin.register(UserDailyActivity)
+class UserDailyActivityAdmin(admin.ModelAdmin):
+	list_display = ('id', 'user', 'activity_date', 'first_activity_at', 'last_activity_at', 'source')
+	search_fields = ('user__email', 'user__name', 'source')
+	list_filter = ('activity_date', 'source')
+
+
+@admin.register(CheckinReminderLog)
+class CheckinReminderLogAdmin(admin.ModelAdmin):
+	list_display = ('id', 'goal', 'user', 'reminder_for_date', 'frequency', 'created_at')
+	search_fields = ('goal__title', 'user__email', 'user__name')
+	list_filter = ('reminder_for_date', 'frequency')
 

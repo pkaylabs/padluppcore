@@ -8,11 +8,12 @@ from django.test import override_settings
 from rest_framework import status
 from rest_framework.test import APITestCase
 from rest_framework.test import APIRequestFactory
+from knox.models import AuthToken
 from django.utils import timezone
 from datetime import datetime, timezone as dt_timezone, timedelta
 
 from accounts.models import User
-from api.models import BuddyRequest, Partnership, Profile, Conversation, Message, Goal, Task, TimerSession, Evidence, Notification, Waitlister
+from api.models import BuddyRequest, Partnership, Profile, Conversation, Message, Goal, Task, TimerSession, Evidence, Notification, UserDailyActivity, InactivityNudgeLog, CheckinReminderLog, Waitlister
 from api.serializers import UserSerializer, MessageSerializer
 from api.consumers import _ScopeRequest
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -212,6 +213,7 @@ class AuthLastLoginTests(APITestCase):
 		self.assertEqual(resp.status_code, status.HTTP_200_OK)
 		user.refresh_from_db()
 		self.assertEqual(user.last_login, fixed_now)
+		self.assertTrue(UserDailyActivity.objects.filter(user=user, activity_date=fixed_now.date()).exists())
 
 
 class StatsEndpointsTests(APITestCase):
@@ -259,6 +261,52 @@ class StatsEndpointsTests(APITestCase):
 			self.assertEqual(resp2.data.get('longest_streak_count'), 1)
 			self.assertEqual(resp2.data.get('current_streak_count'), 1)
 
+	def test_longest_streak_counts_login_days_from_tokens(self):
+		url = reverse('stats-longest-streak')
+		day1 = datetime(2026, 1, 2, 15, 0, 0, tzinfo=dt_timezone.utc)
+		day2 = datetime(2026, 1, 3, 15, 0, 0, tzinfo=dt_timezone.utc)
+
+		with patch('django.utils.timezone.now', return_value=day1):
+			AuthToken.objects.create(self.user)
+
+		with patch('django.utils.timezone.now', return_value=day2):
+			AuthToken.objects.create(self.user)
+			self.user.last_login = day2
+			self.user.save(update_fields=['last_login'])
+			self.client.force_authenticate(user=self.user)
+			resp = self.client.get(url)
+
+		self.assertEqual(resp.status_code, status.HTTP_200_OK)
+		self.assertEqual(resp.data.get('longest_streak_count'), 2)
+		self.assertEqual(resp.data.get('current_streak_count'), 2)
+
+	def test_longest_streak_uses_daily_activity_source_of_truth(self):
+		url = reverse('stats-longest-streak')
+		day1 = datetime(2026, 1, 2, 10, 0, 0, tzinfo=dt_timezone.utc)
+		day2 = datetime(2026, 1, 3, 11, 0, 0, tzinfo=dt_timezone.utc)
+
+		UserDailyActivity.objects.create(
+			user=self.user,
+			activity_date=day1.date(),
+			first_activity_at=day1,
+			last_activity_at=day1,
+			source='manual_seed',
+		)
+		UserDailyActivity.objects.create(
+			user=self.user,
+			activity_date=day2.date(),
+			first_activity_at=day2,
+			last_activity_at=day2,
+			source='manual_seed',
+		)
+
+		with patch('django.utils.timezone.now', return_value=day2):
+			resp = self.client.get(url)
+
+		self.assertEqual(resp.status_code, status.HTTP_200_OK)
+		self.assertEqual(resp.data.get('longest_streak_count'), 2)
+		self.assertEqual(resp.data.get('current_streak_count'), 2)
+
 	def test_longest_streak_any_activity(self):
 		# Create activity on three consecutive days (UTC): 2026-01-01, 2026-01-02, 2026-01-03
 		d1 = datetime(2026, 1, 1, 10, 0, 0, tzinfo=dt_timezone.utc)
@@ -274,6 +322,121 @@ class StatsEndpointsTests(APITestCase):
 
 		evidence = Evidence.objects.create(submitted_by=self.user, task=task, text='x')
 		Evidence.objects.filter(id=evidence.id).update(submitted_at=d2)
+
+
+class InactivityNudgeEndpointTests(APITestCase):
+	def _mk_user(self, *, email: str, phone: str, name: str):
+		user = User(email=email, phone=phone, name=name)
+		user.set_password('pass1234')
+		user.save()
+		return user
+
+	@patch('api.views.send_mailgun_email')
+	def test_nudge_endpoint_is_public_and_idempotent(self, mock_send_mailgun_email):
+		url = reverse('cron-nudge-inactive-users')
+		now = datetime(2026, 4, 25, 12, 0, 0, tzinfo=dt_timezone.utc)
+
+		inactive = self._mk_user(email='inactive@test.com', phone='+10000000041', name='Inactive')
+		active = self._mk_user(email='active@test.com', phone='+10000000042', name='Active')
+
+		with patch('django.utils.timezone.now', return_value=now):
+			UserDailyActivity.objects.create(
+				user=inactive,
+				activity_date=(now - timedelta(days=15)).date(),
+				first_activity_at=now - timedelta(days=15),
+				last_activity_at=now - timedelta(days=15),
+				source='seed',
+			)
+			UserDailyActivity.objects.create(
+				user=active,
+				activity_date=(now - timedelta(days=2)).date(),
+				first_activity_at=now - timedelta(days=2),
+				last_activity_at=now - timedelta(days=2),
+				source='seed',
+			)
+
+			resp1 = self.client.post(url)
+
+		self.assertEqual(resp1.status_code, status.HTTP_200_OK)
+		self.assertEqual(resp1.data['threshold_days'], 14)
+		self.assertEqual(resp1.data['nudged_count'], 1)
+		self.assertEqual(resp1.data['failed_count'], 0)
+		self.assertEqual(resp1.data['skipped_count'], 0)
+		self.assertEqual(mock_send_mailgun_email.call_count, 1)
+		called_kwargs = mock_send_mailgun_email.call_args.kwargs
+		self.assertEqual(called_kwargs['to_email'], 'inactive@test.com')
+		self.assertIn('We miss you at Padlupp', called_kwargs['subject'])
+		self.assertIn('Padlupp', called_kwargs['text'])
+
+		with patch('django.utils.timezone.now', return_value=now):
+			resp2 = self.client.post(url)
+
+		self.assertEqual(resp2.status_code, status.HTTP_200_OK)
+		self.assertEqual(resp2.data['nudged_count'], 0)
+		self.assertEqual(resp2.data['skipped_count'], 1)
+		self.assertEqual(mock_send_mailgun_email.call_count, 1)
+		self.assertTrue(
+			InactivityNudgeLog.objects.filter(
+				user=inactive,
+				threshold_days=14,
+			).exists()
+		)
+
+
+class CheckinReminderCronEndpointTests(APITestCase):
+	def _mk_user(self, *, email: str, phone: str, name: str):
+		user = User(email=email, phone=phone, name=name)
+		user.set_password('pass1234')
+		user.save()
+		return user
+
+	@patch('api.views.send_mailgun_email')
+	def test_checkin_reminders_due_tomorrow_and_idempotent(self, mock_send_mailgun_email):
+		url = reverse('cron-checkin-reminders')
+		now = datetime(2026, 4, 25, 10, 0, 0, tzinfo=dt_timezone.utc)  # Saturday
+
+		owner = self._mk_user(email='owner-goal@test.com', phone='+10000000051', name='Owner')
+		partner = self._mk_user(email='partner-goal@test.com', phone='+10000000052', name='Partner')
+		partnership = Partnership.objects.create(user_a=owner, user_b=partner)
+
+		sunday_goal = Goal.objects.create(
+			user=owner,
+			partnership=partnership,
+			title='Sunday Checkin Goal',
+			checkin_frequency=Goal.CHECKIN_SUNDAYS,
+		)
+		three_day_goal = Goal.objects.create(
+			user=owner,
+			title='3 Day Goal',
+			checkin_frequency=Goal.CHECKIN_3_DAYS,
+		)
+
+		# Anchor three_day_goal so tomorrow is exactly on the cadence.
+		Goal.objects.filter(id=three_day_goal.id).update(created_at=now - timedelta(days=2))
+		three_day_goal.refresh_from_db()
+
+		with patch('django.utils.timezone.now', return_value=now):
+			resp1 = self.client.post(url)
+
+		self.assertEqual(resp1.status_code, status.HTTP_200_OK)
+		self.assertEqual(resp1.data['goals_due_tomorrow'], 2)
+		# sunday_goal -> owner + partner (2), three_day_goal -> owner (1)
+		self.assertEqual(resp1.data['emails_sent'], 3)
+		self.assertEqual(resp1.data['emails_failed'], 0)
+		self.assertEqual(mock_send_mailgun_email.call_count, 3)
+
+		with patch('django.utils.timezone.now', return_value=now):
+			resp2 = self.client.post(url)
+
+		self.assertEqual(resp2.status_code, status.HTTP_200_OK)
+		self.assertEqual(resp2.data['goals_due_tomorrow'], 2)
+		self.assertEqual(resp2.data['emails_sent'], 0)
+		self.assertEqual(resp2.data['emails_skipped'], 3)
+		self.assertEqual(mock_send_mailgun_email.call_count, 3)
+		self.assertEqual(
+			CheckinReminderLog.objects.filter(goal=sunday_goal, reminder_for_date=(now.date() + timedelta(days=1))).count(),
+			2,
+		)
 
 
 class TaskVisibilityTests(APITestCase):

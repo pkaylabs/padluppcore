@@ -7,6 +7,7 @@ from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from api.serializers import LogoutResponseSerializer
 
 from .ws_docs import WebSocketDocsView
+from .views import GoalCheckinReminderCronView, InactiveUserNudgeView
 
 from .viewsets import (
 	AuthViewSet,
@@ -60,6 +61,8 @@ urlpatterns = [
 	path('schema/', SpectacularAPIView.as_view(), name='schema'),
 	path('docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
 	path('websockets/', WebSocketDocsView.as_view(), name='websocket-docs'),
+	path('cron/nudge-inactive-users/', InactiveUserNudgeView.as_view(), name='cron-nudge-inactive-users'),
+	path('cron/checkin-reminders/', GoalCheckinReminderCronView.as_view(), name='cron-checkin-reminders'),
 	path('auth/logout/', LogoutViewSchema.as_view(), name='knox_logout'),
 	path('', include(router.urls)),
 ]

@@ -1,0 +1,61 @@
+{% extends "admin/login.html" %}
+
+{% block extrastyle %}
+  {{ block.super }}
+  <style>
+    body.login {
+      background:
+        radial-gradient(circle at top, rgba(65, 118, 144, 0.14), transparent 38%),
+        linear-gradient(180deg, #f4f8fb 0%, #eef3f7 100%);
+    }
+    .login #header {
+      background: transparent;
+      padding: 24px 0 12px;
+      box-shadow: none;
+    }
+    .login #header h1 {
+      margin: 0;
+      text-align: center;
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      color: #17384a;
+    }
+    .login .main {
+      width: min(420px, calc(100% - 32px));
+      margin: 0 auto;
+    }
+    .login .form-row input {
+      border-radius: 8px;
+      border: 1px solid #c8d2da;
+      padding: 12px 14px;
+      font-size: 14px;
+    }
+    .login .submit-row input {
+      border-radius: 999px;
+      background: #17384a;
+      border-color: #17384a;
+      font-weight: 700;
+      padding: 10px 16px;
+    }
+    .login .submit-row input:hover {
+      background: #0f2631;
+      border-color: #0f2631;
+    }
+    .login .errornote,
+    .login .messagelist li {
+      border-radius: 8px;
+    }
+    .login .branding-note {
+      margin: 0 auto 18px;
+      text-align: center;
+      color: #4b6170;
+      font-size: 14px;
+    }
+  </style>
+{% endblock %}
+
+{% block content_title %}
+  <h1>PADLUPP ADMIN</h1>
+  <p class="branding-note">Secure access to the Padlupp administration console.</p>
+{% endblock %}

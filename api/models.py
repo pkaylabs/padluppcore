@@ -19,11 +19,40 @@ class Profile(TimeStampedModel):
 
 
 class Goal(TimeStampedModel):
+	CHECKIN_DAILY = 'DAILY'
+	CHECKIN_3_DAYS = '3-DAYS'
+	CHECKIN_WEEKLY = 'WEEKLY'
+	CHECKIN_BI_WEEKLY = 'BI-WEEKLY'
+	CHECKIN_MONDAYS = 'MONDAYS'
+	CHECKIN_TUESDAYS = 'TUESDAYS'
+	CHECKIN_WEDNESDAYS = 'WEDNESDAYS'
+	CHECKIN_THURSDAYS = 'THURSDAYS'
+	CHECKIN_FRIDAYS = 'FRIDAYS'
+	CHECKIN_SATURDAYS = 'SATURDAYS'
+	# Legacy typo support for already-persisted values.
+	CHECKIN_SARTUDAYS = 'SARTUDAYS'
+	CHECKIN_SUNDAYS = 'SUNDAYS'
+
+	CHECKIN_FREQUENCY_CHOICES = [
+		(CHECKIN_DAILY, 'Daily'),
+		(CHECKIN_3_DAYS, 'Every 3 Days'),
+		(CHECKIN_WEEKLY, 'Weekly'),
+		(CHECKIN_BI_WEEKLY, 'Bi-Weekly'),
+		(CHECKIN_MONDAYS, 'Mondays'),
+		(CHECKIN_TUESDAYS, 'Tuesdays'),
+		(CHECKIN_WEDNESDAYS, 'Wednesdays'),
+		(CHECKIN_THURSDAYS, 'Thursdays'),
+		(CHECKIN_FRIDAYS, 'Fridays'),
+		(CHECKIN_SATURDAYS, 'Saturdays'),
+		(CHECKIN_SUNDAYS, 'Sundays'),
+	]
+
 	user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='goals')
 	partnership = models.ForeignKey('Partnership', on_delete=models.CASCADE, related_name='goals', null=True, blank=True, help_text='If set, this goal is shared with the partnership.')
 	title = models.CharField(max_length=255)
 	category = models.CharField(max_length=100, blank=True)
 	importance = models.CharField(max_length=20, blank=True)
+	checkin_frequency = models.CharField(max_length=20, choices=CHECKIN_FREQUENCY_CHOICES, default=CHECKIN_DAILY)
 	description = models.TextField(blank=True)
 	start_date = models.DateField(null=True, blank=True)
 	start_time = models.TimeField(null=True, blank=True)
@@ -162,6 +191,64 @@ class Notification(TimeStampedModel):
 	type = models.CharField(max_length=50)
 	payload = models.JSONField(default=dict, blank=True)
 	is_read = models.BooleanField(default=False)
+
+
+class UserDailyActivity(TimeStampedModel):
+	"""One record per user per local calendar day with activity metadata."""
+
+	user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='daily_activities')
+	activity_date = models.DateField()
+	first_activity_at = models.DateTimeField()
+	last_activity_at = models.DateTimeField()
+	source = models.CharField(max_length=50, blank=True, default='')
+
+	class Meta:
+		constraints = [
+			models.UniqueConstraint(fields=['user', 'activity_date'], name='uniq_user_activity_date'),
+		]
+		indexes = [
+			models.Index(fields=['user', 'activity_date']),
+		]
+
+
+class InactivityNudgeLog(TimeStampedModel):
+	"""Tracks inactivity nudges already sent for a given inactivity span."""
+
+	user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='inactivity_nudge_logs')
+	latest_activity_at = models.DateTimeField()
+	threshold_days = models.PositiveSmallIntegerField(default=14)
+
+	class Meta:
+		constraints = [
+			models.UniqueConstraint(
+				fields=['user', 'latest_activity_at', 'threshold_days'],
+				name='uniq_inactivity_nudge_user_activity_threshold',
+			),
+		]
+		indexes = [
+			models.Index(fields=['user', 'threshold_days']),
+			models.Index(fields=['latest_activity_at']),
+		]
+
+
+class CheckinReminderLog(TimeStampedModel):
+	"""Tracks per-goal check-in reminders sent for a specific reminder date."""
+
+	goal = models.ForeignKey(Goal, on_delete=models.CASCADE, related_name='checkin_reminder_logs')
+	user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='checkin_reminder_logs')
+	reminder_for_date = models.DateField()
+	frequency = models.CharField(max_length=20)
+
+	class Meta:
+		constraints = [
+			models.UniqueConstraint(
+				fields=['goal', 'user', 'reminder_for_date'],
+				name='uniq_goal_user_checkin_reminder_for_date',
+			),
+		]
+		indexes = [
+			models.Index(fields=['reminder_for_date', 'frequency']),
+		]
 
 
 class Conversation(TimeStampedModel):

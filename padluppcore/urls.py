@@ -4,6 +4,10 @@ from django.urls import include, path
 from django.conf import settings
 from django.conf.urls.static import static
 
+admin.site.site_header = 'PADLUPP ADMIN'
+admin.site.site_title = 'PADLUPP ADMIN'
+admin.site.index_title = 'PADLUPP ADMIN'
+
 urlpatterns = [
     path('admin/', admin.site.urls),
     # api v1

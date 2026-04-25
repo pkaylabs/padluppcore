@@ -239,6 +239,7 @@ class GoalSerializer(serializers.ModelSerializer):
 			'title',
 			'category',
 			'importance',
+			'checkin_frequency',
 			'description',
 			'start_date',
 			'start_time',
