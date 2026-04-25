@@ -182,6 +182,26 @@ class UserDailyActivity(TimeStampedModel):
 		]
 
 
+class InactivityNudgeLog(TimeStampedModel):
+	"""Tracks inactivity nudges already sent for a given inactivity span."""
+
+	user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='inactivity_nudge_logs')
+	latest_activity_at = models.DateTimeField()
+	threshold_days = models.PositiveSmallIntegerField(default=14)
+
+	class Meta:
+		constraints = [
+			models.UniqueConstraint(
+				fields=['user', 'latest_activity_at', 'threshold_days'],
+				name='uniq_inactivity_nudge_user_activity_threshold',
+			),
+		]
+		indexes = [
+			models.Index(fields=['user', 'threshold_days']),
+			models.Index(fields=['latest_activity_at']),
+		]
+
+
 class Conversation(TimeStampedModel):
 	partnership = models.OneToOneField(Partnership, on_delete=models.CASCADE, related_name='conversation')
 

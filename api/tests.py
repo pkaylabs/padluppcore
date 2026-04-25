@@ -13,7 +13,7 @@ from django.utils import timezone
 from datetime import datetime, timezone as dt_timezone, timedelta
 
 from accounts.models import User
-from api.models import BuddyRequest, Partnership, Profile, Conversation, Message, Goal, Task, TimerSession, Evidence, Notification, UserDailyActivity, Waitlister
+from api.models import BuddyRequest, Partnership, Profile, Conversation, Message, Goal, Task, TimerSession, Evidence, Notification, UserDailyActivity, InactivityNudgeLog, Waitlister
 from api.serializers import UserSerializer, MessageSerializer
 from api.consumers import _ScopeRequest
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -322,6 +322,65 @@ class StatsEndpointsTests(APITestCase):
 
 		evidence = Evidence.objects.create(submitted_by=self.user, task=task, text='x')
 		Evidence.objects.filter(id=evidence.id).update(submitted_at=d2)
+
+
+class InactivityNudgeEndpointTests(APITestCase):
+	def _mk_user(self, *, email: str, phone: str, name: str):
+		user = User(email=email, phone=phone, name=name)
+		user.set_password('pass1234')
+		user.save()
+		return user
+
+	@patch('api.views.send_mailgun_email')
+	def test_nudge_endpoint_is_public_and_idempotent(self, mock_send_mailgun_email):
+		url = reverse('cron-nudge-inactive-users')
+		now = datetime(2026, 4, 25, 12, 0, 0, tzinfo=dt_timezone.utc)
+
+		inactive = self._mk_user(email='inactive@test.com', phone='+10000000041', name='Inactive')
+		active = self._mk_user(email='active@test.com', phone='+10000000042', name='Active')
+
+		with patch('django.utils.timezone.now', return_value=now):
+			UserDailyActivity.objects.create(
+				user=inactive,
+				activity_date=(now - timedelta(days=15)).date(),
+				first_activity_at=now - timedelta(days=15),
+				last_activity_at=now - timedelta(days=15),
+				source='seed',
+			)
+			UserDailyActivity.objects.create(
+				user=active,
+				activity_date=(now - timedelta(days=2)).date(),
+				first_activity_at=now - timedelta(days=2),
+				last_activity_at=now - timedelta(days=2),
+				source='seed',
+			)
+
+			resp1 = self.client.post(url)
+
+		self.assertEqual(resp1.status_code, status.HTTP_200_OK)
+		self.assertEqual(resp1.data['threshold_days'], 14)
+		self.assertEqual(resp1.data['nudged_count'], 1)
+		self.assertEqual(resp1.data['failed_count'], 0)
+		self.assertEqual(resp1.data['skipped_count'], 0)
+		self.assertEqual(mock_send_mailgun_email.call_count, 1)
+		called_kwargs = mock_send_mailgun_email.call_args.kwargs
+		self.assertEqual(called_kwargs['to_email'], 'inactive@test.com')
+		self.assertIn('We miss you at Padlupp', called_kwargs['subject'])
+		self.assertIn('Padlupp', called_kwargs['text'])
+
+		with patch('django.utils.timezone.now', return_value=now):
+			resp2 = self.client.post(url)
+
+		self.assertEqual(resp2.status_code, status.HTTP_200_OK)
+		self.assertEqual(resp2.data['nudged_count'], 0)
+		self.assertEqual(resp2.data['skipped_count'], 1)
+		self.assertEqual(mock_send_mailgun_email.call_count, 1)
+		self.assertTrue(
+			InactivityNudgeLog.objects.filter(
+				user=inactive,
+				threshold_days=14,
+			).exists()
+		)
 
 
 class TaskVisibilityTests(APITestCase):

@@ -15,6 +15,7 @@ from .models import (
 	Notification,
     Conversation,
     Message,
+	InactivityNudgeLog,
 	Waitlister,
 )
 
@@ -121,6 +122,13 @@ class MessageAdmin(admin.ModelAdmin):
 class WaitlisterAdmin(admin.ModelAdmin):
 	list_display = ('id', 'email', 'name', 'country', 'created_at')
 	search_fields = ('email', 'name', 'country')
+
+
+@admin.register(InactivityNudgeLog)
+class InactivityNudgeLogAdmin(admin.ModelAdmin):
+	list_display = ('id', 'user', 'latest_activity_at', 'threshold_days', 'created_at')
+	search_fields = ('user__email', 'user__name')
+	list_filter = ('threshold_days', 'created_at')
 
 
 @admin.register(UserDailyActivity)
