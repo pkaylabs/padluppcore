@@ -15,16 +15,16 @@ from drf_spectacular.utils import OpenApiParameter, OpenApiTypes, extend_schema
 from rest_framework.response import Response
 
 from datetime import timedelta, datetime
-from zoneinfo import ZoneInfo
 from django.utils import timezone
 
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 
 from padluppcore.utils.email import EmailSendError, send_mailgun_email
+from .activity import dt_to_local_date, get_user_tzinfo, record_user_activity
 
 from accounts.models import AccountDeletionRequest, PasswordResetOTP, User
-from .models import BuddyRequest, Conversation, Evidence, Event, Goal, Match, Notification, Partnership, Profile, SubTask, Task, TimerSession, Message, Waitlister
+from .models import BuddyRequest, Conversation, Evidence, Event, Goal, Match, Notification, Partnership, Profile, SubTask, Task, TimerSession, Message, UserDailyActivity, Waitlister
 from .serializers import (
 	BuddyConnectSerializer,
 	BuddyFinderProfileSerializer,
@@ -108,6 +108,7 @@ def _set_last_login(user: User, at: datetime | None = None) -> datetime:
 	User.objects.filter(pk=user.pk).update(last_login=now)
 	# Keep in-memory object consistent for the current request.
 	user.last_login = now
+	record_user_activity(user, at=now, source='login')
 	return now
 
 
@@ -1656,25 +1657,11 @@ class StatsViewSet(viewsets.ViewSet):
 	permission_classes = [permissions.IsAuthenticated]
 
 	def _get_user_tzinfo(self, user):
-		"""Return tzinfo for day-boundary calculations.
-
-		Prefers Profile.time_zone; falls back to Django default.
-		"""
-		profile = Profile.objects.filter(user=user).only('time_zone').first()
-		tz_name = (getattr(profile, 'time_zone', None) or '').strip() if profile else ''
-		if tz_name:
-			try:
-				return ZoneInfo(tz_name)
-			except Exception:
-				pass
-		return timezone.get_default_timezone()
+		"""Return tzinfo for day-boundary calculations."""
+		return get_user_tzinfo(user)
 
 	def _dt_to_local_date(self, dt, tzinfo):
-		if not dt:
-			return None
-		if timezone.is_naive(dt):
-			dt = timezone.make_aware(dt, timezone.get_default_timezone())
-		return timezone.localtime(dt, tzinfo).date()
+		return dt_to_local_date(dt, tzinfo)
 
 	def _longest_consecutive_days(self, dates) -> int:
 		unique = sorted(set(dates))
@@ -1724,64 +1711,86 @@ class StatsViewSet(viewsets.ViewSet):
 		tzinfo = self._get_user_tzinfo(user)
 		active_dates = set()
 
-		# Count login as activity so users can build a streak by showing up daily.
-		login_d = self._dt_to_local_date(getattr(user, 'last_login', None), tzinfo)
-		if login_d:
-			active_dates.add(login_d)
-
-		for started_at, created_at in (
-			TimerSession.objects.filter(user=user)
-			.values_list('started_at', 'created_at')
+		for activity_date in (
+			UserDailyActivity.objects.filter(user=user)
+			.values_list('activity_date', flat=True)
 			.iterator()
 		):
-			d = self._dt_to_local_date(started_at or created_at, tzinfo)
-			if d:
-				active_dates.add(d)
+			if activity_date:
+				active_dates.add(activity_date)
 
-		for submitted_at, created_at in (
-			Evidence.objects.filter(submitted_by=user)
-			.values_list('submitted_at', 'created_at')
-			.iterator()
-		):
-			d = self._dt_to_local_date(submitted_at or created_at, tzinfo)
-			if d:
-				active_dates.add(d)
+		# Backward-compatibility path: if no normalized rows exist yet,
+		# reconstruct from historical model data.
+		if not active_dates:
+			# Count login as activity so users can build a streak by showing up daily.
+			# `last_login` only stores one timestamp; include Knox token creation dates
+			# to preserve historical login days for streak calculations.
+			for token_created_at in (
+				AuthToken.objects.filter(user=user)
+				.values_list('created', flat=True)
+				.iterator()
+			):
+				d = self._dt_to_local_date(token_created_at, tzinfo)
+				if d:
+					active_dates.add(d)
 
-		for updated_at, created_at in (
-			Task.objects.filter(owner=user, status=Task.STATUS_COMPLETED)
-			.values_list('updated_at', 'created_at')
-			.iterator()
-		):
-			d = self._dt_to_local_date(updated_at or created_at, tzinfo)
-			if d:
-				active_dates.add(d)
+			login_d = self._dt_to_local_date(getattr(user, 'last_login', None), tzinfo)
+			if login_d:
+				active_dates.add(login_d)
+
+			for started_at, created_at in (
+				TimerSession.objects.filter(user=user)
+				.values_list('started_at', 'created_at')
+				.iterator()
+			):
+				d = self._dt_to_local_date(started_at or created_at, tzinfo)
+				if d:
+					active_dates.add(d)
+
+			for submitted_at, created_at in (
+				Evidence.objects.filter(submitted_by=user)
+				.values_list('submitted_at', 'created_at')
+				.iterator()
+			):
+				d = self._dt_to_local_date(submitted_at or created_at, tzinfo)
+				if d:
+					active_dates.add(d)
+
+			for updated_at, created_at in (
+				Task.objects.filter(owner=user, status=Task.STATUS_COMPLETED)
+				.values_list('updated_at', 'created_at')
+				.iterator()
+			):
+				d = self._dt_to_local_date(updated_at or created_at, tzinfo)
+				if d:
+					active_dates.add(d)
 
 
-		# Include goals owned by user or partnership goals where user is a partner
-		for created_at, updated_at in (
-			Goal.objects.filter(
-				models.Q(user=user) |
-				models.Q(partnership__user_a=user) |
-				models.Q(partnership__user_b=user)
-			)
-			.values_list('created_at', 'updated_at')
-			.iterator()
-		):
-			created_d = self._dt_to_local_date(created_at, tzinfo)
-			if created_d:
-				active_dates.add(created_d)
-			updated_d = self._dt_to_local_date(updated_at, tzinfo)
-			if updated_d:
-				active_dates.add(updated_d)
+			# Include goals owned by user or partnership goals where user is a partner
+			for created_at, updated_at in (
+				Goal.objects.filter(
+					models.Q(user=user) |
+					models.Q(partnership__user_a=user) |
+					models.Q(partnership__user_b=user)
+				)
+				.values_list('created_at', 'updated_at')
+				.iterator()
+			):
+				created_d = self._dt_to_local_date(created_at, tzinfo)
+				if created_d:
+					active_dates.add(created_d)
+				updated_d = self._dt_to_local_date(updated_at, tzinfo)
+				if updated_d:
+					active_dates.add(updated_d)
 
-		for created_at in (
-			Message.objects.filter(sender=user)
-			.values_list('created_at', flat=True)
-			.iterator()
-		):
-			d = self._dt_to_local_date(created_at, tzinfo)
-			if d:
-				active_dates.add(d)
+			for created_at in (
+				Message.objects.filter(sender=user)
+				.values_list('created_at', flat=True)
+				.iterator()
+			):
+				d = self._dt_to_local_date(created_at, tzinfo)
+				if d:
+					active_dates.add(d)
 
 		local_today = timezone.localtime(timezone.now(), tzinfo).date()
 		longest = self._longest_consecutive_days(active_dates)

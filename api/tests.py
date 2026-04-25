@@ -8,11 +8,12 @@ from django.test import override_settings
 from rest_framework import status
 from rest_framework.test import APITestCase
 from rest_framework.test import APIRequestFactory
+from knox.models import AuthToken
 from django.utils import timezone
 from datetime import datetime, timezone as dt_timezone, timedelta
 
 from accounts.models import User
-from api.models import BuddyRequest, Partnership, Profile, Conversation, Message, Goal, Task, TimerSession, Evidence, Notification, Waitlister
+from api.models import BuddyRequest, Partnership, Profile, Conversation, Message, Goal, Task, TimerSession, Evidence, Notification, UserDailyActivity, Waitlister
 from api.serializers import UserSerializer, MessageSerializer
 from api.consumers import _ScopeRequest
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -212,6 +213,7 @@ class AuthLastLoginTests(APITestCase):
 		self.assertEqual(resp.status_code, status.HTTP_200_OK)
 		user.refresh_from_db()
 		self.assertEqual(user.last_login, fixed_now)
+		self.assertTrue(UserDailyActivity.objects.filter(user=user, activity_date=fixed_now.date()).exists())
 
 
 class StatsEndpointsTests(APITestCase):
@@ -258,6 +260,52 @@ class StatsEndpointsTests(APITestCase):
 			self.assertEqual(resp2.status_code, status.HTTP_200_OK)
 			self.assertEqual(resp2.data.get('longest_streak_count'), 1)
 			self.assertEqual(resp2.data.get('current_streak_count'), 1)
+
+	def test_longest_streak_counts_login_days_from_tokens(self):
+		url = reverse('stats-longest-streak')
+		day1 = datetime(2026, 1, 2, 15, 0, 0, tzinfo=dt_timezone.utc)
+		day2 = datetime(2026, 1, 3, 15, 0, 0, tzinfo=dt_timezone.utc)
+
+		with patch('django.utils.timezone.now', return_value=day1):
+			AuthToken.objects.create(self.user)
+
+		with patch('django.utils.timezone.now', return_value=day2):
+			AuthToken.objects.create(self.user)
+			self.user.last_login = day2
+			self.user.save(update_fields=['last_login'])
+			self.client.force_authenticate(user=self.user)
+			resp = self.client.get(url)
+
+		self.assertEqual(resp.status_code, status.HTTP_200_OK)
+		self.assertEqual(resp.data.get('longest_streak_count'), 2)
+		self.assertEqual(resp.data.get('current_streak_count'), 2)
+
+	def test_longest_streak_uses_daily_activity_source_of_truth(self):
+		url = reverse('stats-longest-streak')
+		day1 = datetime(2026, 1, 2, 10, 0, 0, tzinfo=dt_timezone.utc)
+		day2 = datetime(2026, 1, 3, 11, 0, 0, tzinfo=dt_timezone.utc)
+
+		UserDailyActivity.objects.create(
+			user=self.user,
+			activity_date=day1.date(),
+			first_activity_at=day1,
+			last_activity_at=day1,
+			source='manual_seed',
+		)
+		UserDailyActivity.objects.create(
+			user=self.user,
+			activity_date=day2.date(),
+			first_activity_at=day2,
+			last_activity_at=day2,
+			source='manual_seed',
+		)
+
+		with patch('django.utils.timezone.now', return_value=day2):
+			resp = self.client.get(url)
+
+		self.assertEqual(resp.status_code, status.HTTP_200_OK)
+		self.assertEqual(resp.data.get('longest_streak_count'), 2)
+		self.assertEqual(resp.data.get('current_streak_count'), 2)
 
 	def test_longest_streak_any_activity(self):
 		# Create activity on three consecutive days (UTC): 2026-01-01, 2026-01-02, 2026-01-03

@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^Get-Location; Select-String -Path \"api/viewsets\\.py\" -Pattern \"TimerSession\\|Evidence\\|AuthToken\\|Task\\|Goal\\|Message\\|save\\\\\\(\\|create\\\\\\(\\|update\\\\\\(\" -CaseSensitive:\\$false \\| ForEach-Object \\{ \"\\{0\\}:\\{1\\}\" -f \\$_\\.LineNumber, \\$_\\.Line\\.Trim\\(\\) \\}$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

@@ -10,6 +10,7 @@ from .models import (
 	Task,
 	SubTask,
 	TimerSession,
+	UserDailyActivity,
 	Evidence,
 	Notification,
     Conversation,
@@ -120,4 +121,11 @@ class MessageAdmin(admin.ModelAdmin):
 class WaitlisterAdmin(admin.ModelAdmin):
 	list_display = ('id', 'email', 'name', 'country', 'created_at')
 	search_fields = ('email', 'name', 'country')
+
+
+@admin.register(UserDailyActivity)
+class UserDailyActivityAdmin(admin.ModelAdmin):
+	list_display = ('id', 'user', 'activity_date', 'first_activity_at', 'last_activity_at', 'source')
+	search_fields = ('user__email', 'user__name', 'source')
+	list_filter = ('activity_date', 'source')
 

@@ -164,6 +164,24 @@ class Notification(TimeStampedModel):
 	is_read = models.BooleanField(default=False)
 
 
+class UserDailyActivity(TimeStampedModel):
+	"""One record per user per local calendar day with activity metadata."""
+
+	user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='daily_activities')
+	activity_date = models.DateField()
+	first_activity_at = models.DateTimeField()
+	last_activity_at = models.DateTimeField()
+	source = models.CharField(max_length=50, blank=True, default='')
+
+	class Meta:
+		constraints = [
+			models.UniqueConstraint(fields=['user', 'activity_date'], name='uniq_user_activity_date'),
+		]
+		indexes = [
+			models.Index(fields=['user', 'activity_date']),
+		]
+
+
 class Conversation(TimeStampedModel):
 	partnership = models.OneToOneField(Partnership, on_delete=models.CASCADE, related_name='conversation')
 

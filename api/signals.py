@@ -11,10 +11,57 @@ from django.dispatch import receiver
 
 from padluppcore.utils.email import EmailSendError, send_mailgun_email
 
-from .models import Conversation, Message, Notification
+from .activity import record_user_activity
+from .models import Conversation, Evidence, Goal, Message, Notification, Task, TimerSession
 from .serializers import MessageSerializer
 
 logger = logging.getLogger(__name__)
+
+
+@receiver(post_save, sender=TimerSession)
+def record_timer_session_activity(sender, instance: TimerSession, created: bool, **kwargs):
+    if not created or not instance.user_id:
+        return
+    record_user_activity(instance.user, at=instance.started_at or instance.created_at, source='timer_session')
+
+
+@receiver(post_save, sender=Evidence)
+def record_evidence_activity(sender, instance: Evidence, created: bool, **kwargs):
+    if not created or not instance.submitted_by_id:
+        return
+    record_user_activity(instance.submitted_by, at=instance.submitted_at or instance.created_at, source='evidence_submitted')
+
+
+@receiver(post_save, sender=Message)
+def record_message_activity(sender, instance: Message, created: bool, **kwargs):
+    if not created or not instance.sender_id:
+        return
+    record_user_activity(instance.sender, at=instance.created_at, source='message_sent')
+
+
+@receiver(post_save, sender=Goal)
+def record_goal_activity(sender, instance: Goal, created: bool, **kwargs):
+    # Match existing streak semantics: shared goal changes count for both partners.
+    at = instance.updated_at or instance.created_at
+
+    if instance.user_id:
+        record_user_activity(instance.user, at=at, source='goal_updated')
+
+    partnership = getattr(instance, 'partnership', None)
+    if not partnership:
+        return
+
+    if getattr(partnership, 'user_a_id', None):
+        record_user_activity(partnership.user_a, at=at, source='goal_updated')
+    if getattr(partnership, 'user_b_id', None):
+        record_user_activity(partnership.user_b, at=at, source='goal_updated')
+
+
+@receiver(post_save, sender=Task)
+def record_task_completion_activity(sender, instance: Task, created: bool, **kwargs):
+    if instance.status != Task.STATUS_COMPLETED or not instance.owner_id:
+        return
+    record_user_activity(instance.owner, at=instance.updated_at or instance.created_at, source='task_completed')
 
 
 @receiver(post_save, sender=Conversation)

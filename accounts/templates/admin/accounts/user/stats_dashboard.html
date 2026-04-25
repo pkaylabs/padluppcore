@@ -1,0 +1,231 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block extrahead %}
+  {{ block.super }}
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  {{ active_daily_labels|json_script:"activeDailyLabels" }}
+  {{ active_daily_values|json_script:"activeDailyValues" }}
+  {{ active_weekly_labels|json_script:"activeWeeklyLabels" }}
+  {{ active_weekly_values|json_script:"activeWeeklyValues" }}
+  {{ signups_daily_labels|json_script:"signupsDailyLabels" }}
+  {{ signups_daily_values|json_script:"signupsDailyValues" }}
+  {{ signups_weekly_labels|json_script:"signupsWeeklyLabels" }}
+  {{ signups_weekly_values|json_script:"signupsWeeklyValues" }}
+  {{ signups_monthly_labels|json_script:"signupsMonthlyLabels" }}
+  {{ signups_monthly_values|json_script:"signupsMonthlyValues" }}
+  <style>
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .stat-card {
+      border: 1px solid #e1e4e8;
+      border-radius: 6px;
+      padding: 12px;
+      background: #fff;
+    }
+    .stat-card h3 {
+      margin: 0 0 8px;
+      font-size: 12px;
+      text-transform: uppercase;
+      color: #666;
+      letter-spacing: 0.03em;
+    }
+    .stat-card p {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 600;
+    }
+    .charts-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .chart-card {
+      border: 1px solid #e1e4e8;
+      border-radius: 6px;
+      padding: 12px;
+      background: #fff;
+    }
+    .chart-card h3 {
+      margin: 0 0 10px;
+      font-size: 14px;
+    }
+    .chart-wrap {
+      height: 280px;
+    }
+    .actions-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+    .button {
+      display: inline-block;
+      border-radius: 4px;
+      padding: 8px 12px;
+      text-decoration: none;
+      border: 1px solid #417690;
+      background: #417690;
+      color: #fff;
+      font-size: 13px;
+    }
+    .button.secondary {
+      background: #fff;
+      color: #417690;
+    }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <h1>User Stats Dashboard</h1>
+  <div class="actions-row">
+    <a class="button" href="{{ export_csv_url }}">Export CSV</a>
+    <a class="button secondary" href="{{ export_excel_url }}">Export Excel</a>
+    <a class="button secondary" href="{% url 'admin:accounts_user_changelist' %}">Back to Users</a>
+  </div>
+
+  <div class="stats-grid">
+    <div class="stat-card">
+      <h3>Active Users Today</h3>
+      <p>{{ kpis.active_today }}</p>
+    </div>
+    <div class="stat-card">
+      <h3>Active Users This Week</h3>
+      <p>{{ kpis.active_this_week }}</p>
+    </div>
+    <div class="stat-card">
+      <h3>Signups Today</h3>
+      <p>{{ kpis.signups_today }}</p>
+    </div>
+    <div class="stat-card">
+      <h3>Signups This Week</h3>
+      <p>{{ kpis.signups_this_week }}</p>
+    </div>
+    <div class="stat-card">
+      <h3>Signups This Month</h3>
+      <p>{{ kpis.signups_this_month }}</p>
+    </div>
+    <div class="stat-card">
+      <h3>Signups All Time</h3>
+      <p>{{ kpis.signups_all_time }}</p>
+    </div>
+  </div>
+
+  <div class="charts-grid">
+    <div class="chart-card">
+      <h3>Active Users by Day (Last 30 Days)</h3>
+      <div class="chart-wrap"><canvas id="activeDailyChart"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3>Active Users by Week (Last 12 Weeks)</h3>
+      <div class="chart-wrap"><canvas id="activeWeeklyChart"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3>Signups by Day (Last 30 Days)</h3>
+      <div class="chart-wrap"><canvas id="signupDailyChart"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3>Signups by Week (Last 12 Weeks)</h3>
+      <div class="chart-wrap"><canvas id="signupWeeklyChart"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3>Signups by Month (All Time)</h3>
+      <div class="chart-wrap"><canvas id="signupMonthlyChart"></canvas></div>
+    </div>
+  </div>
+
+  <script>
+    const readJsonScript = (id) => {
+      const el = document.getElementById(id);
+      return el ? JSON.parse(el.textContent) : [];
+    };
+
+    const activeDailyLabels = readJsonScript('activeDailyLabels');
+    const activeDailyValues = readJsonScript('activeDailyValues');
+    const activeWeeklyLabels = readJsonScript('activeWeeklyLabels');
+    const activeWeeklyValues = readJsonScript('activeWeeklyValues');
+    const signupsDailyLabels = readJsonScript('signupsDailyLabels');
+    const signupsDailyValues = readJsonScript('signupsDailyValues');
+    const signupsWeeklyLabels = readJsonScript('signupsWeeklyLabels');
+    const signupsWeeklyValues = readJsonScript('signupsWeeklyValues');
+    const signupsMonthlyLabels = readJsonScript('signupsMonthlyLabels');
+    const signupsMonthlyValues = readJsonScript('signupsMonthlyValues');
+
+    const createLineChart = (canvasId, labels, values, label, color) => {
+      const canvas = document.getElementById(canvasId);
+      if (!canvas) {
+        return;
+      }
+      new Chart(canvas, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            label,
+            data: values,
+            borderColor: color,
+            backgroundColor: 'rgba(65, 118, 144, 0.15)',
+            borderWidth: 2,
+            tension: 0.25,
+            fill: true,
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+          },
+          scales: {
+            y: {
+              beginAtZero: true,
+              ticks: { precision: 0 },
+            },
+          },
+        },
+      });
+    };
+
+    const createBarChart = (canvasId, labels, values, label, color) => {
+      const canvas = document.getElementById(canvasId);
+      if (!canvas) {
+        return;
+      }
+      new Chart(canvas, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [{
+            label,
+            data: values,
+            backgroundColor: color,
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+          },
+          scales: {
+            y: {
+              beginAtZero: true,
+              ticks: { precision: 0 },
+            },
+          },
+        },
+      });
+    };
+
+    createLineChart('activeDailyChart', activeDailyLabels, activeDailyValues, 'Active Users (Daily)', '#2f6f8f');
+    createBarChart('activeWeeklyChart', activeWeeklyLabels, activeWeeklyValues, 'Active Users (Weekly)', 'rgba(47, 111, 143, 0.65)');
+    createLineChart('signupDailyChart', signupsDailyLabels, signupsDailyValues, 'Signups (Daily)', '#2f8f66');
+    createBarChart('signupWeeklyChart', signupsWeeklyLabels, signupsWeeklyValues, 'Signups (Weekly)', 'rgba(47, 143, 102, 0.65)');
+    createBarChart('signupMonthlyChart', signupsMonthlyLabels, signupsMonthlyValues, 'Signups (Monthly)', 'rgba(160, 100, 35, 0.75)');
+  </script>
+{% endblock %}
