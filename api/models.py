@@ -1,8 +1,15 @@
+import uuid
+
 from django.conf import settings
 from django.db import models
 
 from padluppcore.utils.constants import StatusEnum
 from padluppcore.utils.models import TimeStampedModel
+
+
+def build_goal_invite_link(shared_id) -> str:
+	base_url = (getattr(settings, 'PADLUPP_APP_URL', '') or 'https://app.padlupp.com').rstrip('/')
+	return f'{base_url}/goals/?shared_id={shared_id}'
 
 
 class Profile(TimeStampedModel):
@@ -49,16 +56,43 @@ class Goal(TimeStampedModel):
 
 	user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='goals')
 	partnership = models.ForeignKey('Partnership', on_delete=models.CASCADE, related_name='goals', null=True, blank=True, help_text='If set, this goal is shared with the partnership.')
+	members = models.ManyToManyField(settings.AUTH_USER_MODEL, through='GoalMembership', through_fields=('goal', 'user'), related_name='member_goals', blank=True)
 	title = models.CharField(max_length=255)
 	category = models.CharField(max_length=100, blank=True)
 	importance = models.CharField(max_length=20, blank=True)
 	checkin_frequency = models.CharField(max_length=20, choices=CHECKIN_FREQUENCY_CHOICES, default=CHECKIN_DAILY)
+	is_public = models.BooleanField(default=False)
+	is_shared = models.BooleanField(default=False)
+	shared_id = models.UUIDField(null=True, blank=True, unique=True)
+	invite_link = models.URLField(null=True, blank=True)
 	description = models.TextField(blank=True)
 	start_date = models.DateField(null=True, blank=True)
 	start_time = models.TimeField(null=True, blank=True)
 	target_date = models.DateField(null=True, blank=True)
 	status = models.CharField(max_length=20, default=StatusEnum.PENDING.value)
 	is_active = models.BooleanField(default=True)
+
+	def save(self, *args, **kwargs):
+		if self.is_public:
+			if not self.shared_id:
+				self.shared_id = uuid.uuid4()
+			if not self.invite_link and self.shared_id:
+				self.invite_link = build_goal_invite_link(self.shared_id)
+		super().save(*args, **kwargs)
+
+
+class GoalMembership(TimeStampedModel):
+	goal = models.ForeignKey(Goal, on_delete=models.CASCADE, related_name='goal_memberships')
+	user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='goal_memberships')
+	added_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, related_name='added_goal_memberships', null=True, blank=True)
+
+	class Meta:
+		constraints = [
+			models.UniqueConstraint(fields=['goal', 'user'], name='uniq_goal_member'),
+		]
+		indexes = [
+			models.Index(fields=['goal', 'user']),
+		]
 
 
 class Partnership(TimeStampedModel):
@@ -252,13 +286,32 @@ class CheckinReminderLog(TimeStampedModel):
 
 
 class Conversation(TimeStampedModel):
-	partnership = models.OneToOneField(Partnership, on_delete=models.CASCADE, related_name='conversation')
+	partnership = models.OneToOneField(Partnership, on_delete=models.CASCADE, related_name='conversation', null=True, blank=True)
+	goal = models.OneToOneField(Goal, on_delete=models.CASCADE, related_name='conversation', null=True, blank=True)
+	is_group = models.BooleanField(default=False)
+	members = models.ManyToManyField(settings.AUTH_USER_MODEL, through='ConversationMembership', through_fields=('conversation', 'user'), related_name='conversations', blank=True)
+
+
+class ConversationMembership(TimeStampedModel):
+	conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name='conversation_memberships')
+	user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='conversation_memberships')
+	added_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, related_name='added_conversation_memberships', null=True, blank=True)
+
+	class Meta:
+		constraints = [
+			models.UniqueConstraint(fields=['conversation', 'user'], name='uniq_conversation_member'),
+		]
+		indexes = [
+			models.Index(fields=['conversation', 'user']),
+		]
 
 
 class Message(TimeStampedModel):
 	conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name='messages')
 	sender = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='messages')
 	text = models.TextField(blank=True, default='')
+	reply_to_message = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='reply_messages')
+	is_a_reply = models.BooleanField(default=False)
 	attachment = models.FileField(upload_to='chat_attachments/', null=True, blank=True)
 	attachment_name = models.CharField(max_length=255, blank=True, default='')
 	attachment_mime = models.CharField(max_length=100, blank=True, default='')
