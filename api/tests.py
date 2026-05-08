@@ -750,3 +750,118 @@ class ConversationEndpointsTests(APITestCase):
 		rows2 = resp2.data.get('results', resp2.data)
 		self.assertEqual(len(rows2), 1)
 		self.assertEqual(rows2[0]['unread_count'], 1)
+
+
+class GoalSharingEndpointsTests(APITestCase):
+	def _mk_user(self, *, email: str, phone: str, name: str, password: str = 'pass1234'):
+		user = User(email=email, phone=phone, name=name)
+		user.set_password(password)
+		user.save()
+		return user
+
+	def setUp(self):
+		self.owner = self._mk_user(email='goal-owner@test.com', phone='+10000000061', name='GoalOwner')
+		self.member = self._mk_user(email='goal-member@test.com', phone='+10000000062', name='GoalMember')
+		self.stranger = self._mk_user(email='goal-stranger@test.com', phone='+10000000063', name='GoalStranger')
+		self.client.force_authenticate(user=self.owner)
+
+	def test_public_goal_generates_invite_link(self):
+		goal = Goal.objects.create(user=self.owner, title='Public goal', is_public=True)
+		goal.refresh_from_db()
+		self.assertIsNotNone(goal.shared_id)
+		self.assertIsNotNone(goal.invite_link)
+		self.assertIn('/goals/?shared_id=', goal.invite_link)
+
+	def test_join_goal_adds_member_and_creates_group_conversation(self):
+		goal = Goal.objects.create(user=self.owner, title='Joinable goal', is_public=True)
+		goal.refresh_from_db()
+
+		join_url = reverse('goals-join-goal')
+		self.client.force_authenticate(user=self.member)
+		resp = self.client.post(join_url, data={'shared_id': str(goal.shared_id)}, format='json')
+		self.assertEqual(resp.status_code, status.HTTP_200_OK)
+		self.assertEqual(resp.data['goal_id'], goal.id)
+		self.assertEqual(resp.data['direct_link'], f'https://app.padlupp.com/goals/{goal.id}')
+
+		goal.refresh_from_db()
+		self.assertTrue(goal.members.filter(id=self.owner.id).exists())
+		self.assertTrue(goal.members.filter(id=self.member.id).exists())
+		self.assertTrue(goal.conversation.is_group)
+		self.assertSetEqual(set(goal.conversation.members.values_list('id', flat=True)), {self.owner.id, self.member.id})
+
+	@patch('api.viewsets.send_mailgun_email')
+	def test_share_goal_adds_existing_users_and_invites_unknown_emails(self, mock_send_mailgun_email):
+		goal = Goal.objects.create(user=self.owner, title='Shared goal', is_public=True)
+		share_url = reverse('goals-share', kwargs={'pk': goal.id})
+		resp = self.client.post(
+			share_url,
+			data={'emails': [self.member.email, 'new-person@example.com'], 'message': 'Join me on this goal.'},
+			format='json',
+		)
+		self.assertEqual(resp.status_code, status.HTTP_200_OK)
+		self.assertEqual(resp.data['goal_id'], goal.id)
+		self.assertIn(self.member.id, resp.data['added_user_ids'])
+		self.assertIn('new-person@example.com', resp.data['invited_emails'])
+		self.assertTrue(goal.members.filter(id=self.member.id).exists())
+		self.assertTrue(Notification.objects.filter(user=self.member, type='goal_shared').exists())
+		self.assertTrue(Waitlister.objects.filter(email='new-person@example.com').exists())
+		self.assertGreaterEqual(mock_send_mailgun_email.call_count, 2)
+
+
+class ConversationFeatureEndpointsTests(APITestCase):
+	def _mk_user(self, *, email: str, phone: str, name: str):
+		user = User(email=email, phone=phone, name=name)
+		user.set_password('pass1234')
+		user.save()
+		return user
+
+	def setUp(self):
+		self.owner = self._mk_user(email='conv-owner@test.com', phone='+10000000071', name='ConvOwner')
+		self.partner = self._mk_user(email='conv-partner@test.com', phone='+10000000072', name='ConvPartner')
+		user_a, user_b = sorted([self.owner, self.partner], key=lambda u: u.id)
+		self.partnership = Partnership.objects.create(user_a=user_a, user_b=user_b)
+		self.conversation, _ = Conversation.objects.get_or_create(partnership=self.partnership)
+
+	def test_reply_to_message_sets_reply_payload(self):
+		root = Message.objects.create(conversation=self.conversation, sender=self.partner, text='root message')
+		self.client.force_authenticate(user=self.owner)
+		url = reverse('messages-list')
+		resp = self.client.post(
+			url,
+			data={'conversation': self.conversation.id, 'text': 'reply message', 'reply_to_message_id': root.id},
+			format='json',
+		)
+		self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+		self.assertTrue(resp.data['is_a_reply'])
+		self.assertIsNotNone(resp.data['reply_to'])
+		self.assertEqual(resp.data['reply_to']['id'], root.id)
+
+	def test_conversation_media_lists_only_attachments(self):
+		text_message = Message.objects.create(conversation=self.conversation, sender=self.owner, text='plain text')
+		file_message = Message.objects.create(
+			conversation=self.conversation,
+			sender=self.partner,
+			text='with file',
+			attachment=SimpleUploadedFile('evidence.png', b'png-bytes', content_type='image/png'),
+			attachment_name='evidence.png',
+			attachment_mime='image/png',
+			attachment_size=9,
+		)
+		self.client.force_authenticate(user=self.owner)
+		url = reverse('conversations-media', kwargs={'pk': self.conversation.id})
+		resp = self.client.get(url)
+		self.assertEqual(resp.status_code, status.HTTP_200_OK)
+		rows = resp.data.get('results', resp.data) if isinstance(resp.data, dict) else resp.data
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]['sender_id'], self.partner.id)
+		self.assertEqual(rows[0]['sender_name'], self.partner.name)
+		self.assertIn('http://testserver/', rows[0]['file'])
+
+	def test_buddy_profile_endpoint_returns_other_profile(self):
+		Profile.objects.get_or_create(user=self.partner)
+		self.client.force_authenticate(user=self.owner)
+		url = reverse('buddies-profile', kwargs={'user_id': self.partner.id})
+		resp = self.client.get(url)
+		self.assertEqual(resp.status_code, status.HTTP_200_OK)
+		self.assertEqual(resp.data['user']['id'], self.partner.id)
+		self.assertIn('profile', resp.data)
