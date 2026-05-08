@@ -288,6 +288,7 @@ class CheckinReminderLog(TimeStampedModel):
 class Conversation(TimeStampedModel):
 	partnership = models.OneToOneField(Partnership, on_delete=models.CASCADE, related_name='conversation', null=True, blank=True)
 	goal = models.OneToOneField(Goal, on_delete=models.CASCADE, related_name='conversation', null=True, blank=True)
+	name = models.CharField(max_length=255, blank=True, default='')
 	is_group = models.BooleanField(default=False)
 	members = models.ManyToManyField(settings.AUTH_USER_MODEL, through='ConversationMembership', through_fields=('conversation', 'user'), related_name='conversations', blank=True)
 
