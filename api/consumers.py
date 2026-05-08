@@ -158,9 +158,10 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
                     'partnership': conv.partnership_id,
                     'goal': conv.goal_id,
                     'is_group': conv.is_group,
-                    'partner_name': partner_data.get('name'),
+                    'partner_name': conv.name or partner_data.get('name'),
                     'partner_avatar': partner_data.get('avatar'),
-                    'display_name': partner_data.get('name'),
+                    'display_name': conv.name or partner_data.get('name'),
+                    'name': conv.name,
                     'member_ids': member_ids,
                     'member_names': [u.name for u in member_users],
                     'last_message': MessageSerializer(last_msg, context={'request': self.serializer_request}).data if last_msg else None,
@@ -581,7 +582,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def chat_presence(self, event):
         try:
-            await self.send_json({'type': 'presence', 'online_user_ids': event['online_user_ids'], 'last_seen_at_by_user_id': event.get('last_seen_at_by_user_id', {})})
+            await self.send_json({'type': 'presence', 'online_user_ids': event['online_user_ids'], 'online_user_count': event['online_user_count'], 'last_seen_at_by_user_id': event.get('last_seen_at_by_user_id', {})})
         except Exception:
             pass
 
@@ -615,7 +616,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             last_seen_at_by_user_id = {str(uid): last_seen_at_by_user_id.get(str(uid)) for uid in participants if str(uid) in last_seen_at_by_user_id}
         await self.channel_layer.group_send(
             self.group_name,
-            {'type': 'chat.presence', 'online_user_ids': online_ids, 'last_seen_at_by_user_id': last_seen_at_by_user_id},
+            {'type': 'chat.presence', 'online_user_ids': online_ids, 'online_user_count': len(online_ids), 'last_seen_at_by_user_id': last_seen_at_by_user_id},
         )
 
     def _presence_cache_key(self, conversation_id: int) -> str:
