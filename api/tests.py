@@ -807,6 +807,24 @@ class GoalSharingEndpointsTests(APITestCase):
 		self.assertTrue(Waitlister.objects.filter(email='new-person@example.com').exists())
 		self.assertGreaterEqual(mock_send_mailgun_email.call_count, 2)
 
+	def test_group_conversation_can_be_renamed_by_member(self):
+		goal = Goal.objects.create(user=self.owner, title='Renameable goal', is_public=True)
+		join_url = reverse('goals-join-goal')
+		self.client.force_authenticate(user=self.member)
+		join_resp = self.client.post(join_url, data={'shared_id': str(goal.shared_id)}, format='json')
+		self.assertEqual(join_resp.status_code, status.HTTP_200_OK)
+
+		conversation = goal.conversation
+		self.assertTrue(conversation.is_group)
+		self.assertEqual(conversation.name, 'Renameable goal')
+
+		rename_url = reverse('conversations-rename-group', kwargs={'pk': conversation.id})
+		resp = self.client.post(rename_url, data={'name': 'Daily Wins'}, format='json')
+		self.assertEqual(resp.status_code, status.HTTP_200_OK)
+		self.assertEqual(resp.data['name'], 'Daily Wins')
+		conversation.refresh_from_db()
+		self.assertEqual(conversation.name, 'Daily Wins')
+
 
 class ConversationFeatureEndpointsTests(APITestCase):
 	def _mk_user(self, *, email: str, phone: str, name: str):
