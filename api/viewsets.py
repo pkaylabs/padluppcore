@@ -1691,6 +1691,8 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
 
 	def get_queryset(self):
 		user = self.request.user
+		if not getattr(user, 'is_authenticated', False):
+			return Conversation.objects.none()
 		return Conversation.objects.filter(
 			models.Q(members=user) |
 			models.Q(partnership__user_a=user) |
