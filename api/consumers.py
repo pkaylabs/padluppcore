@@ -106,8 +106,10 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
         from django.db.models import Q
 		
         convs = list(
-            Conversation.objects.select_related('partnership', 'partnership__user_a', 'partnership__user_b')
-            .filter(Q(partnership__user_a_id=user_id) | Q(partnership__user_b_id=user_id))
+            Conversation.objects.select_related('partnership', 'partnership__user_a', 'partnership__user_b', 'goal')
+            .prefetch_related('members')
+            .filter(Q(members__id=user_id) | Q(partnership__user_a_id=user_id) | Q(partnership__user_b_id=user_id) | Q(goal__members__id=user_id))
+            .distinct()
             .order_by('-created_at')
         )
         conv_ids = [c.id for c in convs]
@@ -129,9 +131,22 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
         result = []
         for conv in convs:
             last_msg = last_msgs.get(last_msg_id_by_conv.get(conv.id))
-            partnership = conv.partnership
-            partner_user = partnership.user_b if partnership.user_a_id == user_id else partnership.user_a
-            partner_data = UserSerializer(partner_user, context={'request': self.serializer_request}).data if partner_user else {}
+            member_users = list(conv.members.all()) if conv.members.exists() else []
+            if conv.is_group and conv.goal_id:
+                partner_data = {'name': conv.goal.title, 'avatar': None}
+            elif conv.partnership_id:
+                partner_user = conv.partnership.user_b if conv.partnership.user_a_id == user_id else conv.partnership.user_a
+                partner_data = UserSerializer(partner_user, context={'request': self.serializer_request}).data if partner_user else {}
+            elif member_users:
+                partner_data = {'name': ', '.join([u.name for u in member_users]), 'avatar': None}
+            else:
+                partner_data = {}
+            member_ids = list(conv.members.values_list('id', flat=True))
+            if not member_ids:
+                if conv.partnership_id:
+                    member_ids = [conv.partnership.user_a_id, conv.partnership.user_b_id]
+                elif conv.goal_id:
+                    member_ids = list(conv.goal.members.values_list('id', flat=True))
             unread_count = (
                 Message.objects.filter(conversation_id=conv.id, is_read=False)
                 .exclude(sender_id=user_id)
@@ -141,8 +156,13 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
                 {
                     'id': conv.id,
                     'partnership': conv.partnership_id,
+                    'goal': conv.goal_id,
+                    'is_group': conv.is_group,
                     'partner_name': partner_data.get('name'),
                     'partner_avatar': partner_data.get('avatar'),
+                    'display_name': partner_data.get('name'),
+                    'member_ids': member_ids,
+                    'member_names': [u.name for u in member_users],
                     'last_message': MessageSerializer(last_msg, context={'request': self.serializer_request}).data if last_msg else None,
                     'unread_count': unread_count,
                     'created_at': conv.created_at.isoformat() if conv.created_at else None,
@@ -211,10 +231,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # Send a presence snapshot to the connecting client
         online_ids = await self.get_online_user_ids(self.conversation_id)
+        last_seen_at_by_user_id = await self.get_last_seen_at_by_user_id(self.conversation_id)
         participants = await self.get_conversation_participant_ids(self.conversation_id)
         if participants:
             online_ids = sorted(set(online_ids) & set(participants))
-        await self.send_json({'type': 'presence', 'online_user_ids': online_ids})
+            last_seen_at_by_user_id = {str(uid): last_seen_at_by_user_id.get(str(uid)) for uid in participants if str(uid) in last_seen_at_by_user_id}
+        await self.send_json({'type': 'presence', 'online_user_ids': online_ids, 'last_seen_at_by_user_id': last_seen_at_by_user_id})
 
         # Also push a conversations-list update for this conversation.
         await self.broadcast_conversation_updates()
@@ -271,15 +293,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 return
 
             content = ContentFile(bytes_data, name=filename)
-            message = await self.create_message(
-                user.id,
-                self.conversation_id,
-                caption,
-                attachment=content,
-                attachment_name=filename,
-                attachment_mime=content_type,
-                attachment_size=len(bytes_data),
-            )
+            try:
+                message = await self.create_message(
+                    user.id,
+                    self.conversation_id,
+                    caption,
+                    attachment=content,
+                    attachment_name=filename,
+                    attachment_mime=content_type,
+                    attachment_size=len(bytes_data),
+                    reply_to_message_id=meta.get('reply_to_message_id'),
+                )
+            except ValueError:
+                await self.send_json({'type': 'error', 'error': 'invalid_reply_target'})
+                return
             serialized = MessageSerializer(message, context={'request': self.serializer_request}).data
 
             await self.send_json({'type': 'ack', 'ack': 'received', 'message_id': message.id})
@@ -303,7 +330,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if not text:
                 return
 
-            message = await self.create_message(user.id, self.conversation_id, text)
+            try:
+                message = await self.create_message(
+                    user.id,
+                    self.conversation_id,
+                    text,
+                    reply_to_message_id=data.get('reply_to_message_id'),
+                )
+            except ValueError:
+                await self.send_json({'type': 'error', 'error': 'invalid_reply_target'})
+                return
             serialized = MessageSerializer(message, context={'request': self.serializer_request}).data
 
             # Delivery ack to the sender (message persisted)
@@ -327,6 +363,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             filename = self._sanitize_filename(data.get('filename'), fallback='upload.bin')
             content_type = (data.get('content_type') or '').strip().lower()
             caption = (data.get('text') or '').strip()
+            reply_to_message_id = data.get('reply_to_message_id')
             if not b64 or not content_type:
                 await self.send_json({'type': 'error', 'error': 'missing_fields'})
                 return
@@ -346,15 +383,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 return
 
             content = ContentFile(raw, name=filename)
-            message = await self.create_message(
-                user.id,
-                self.conversation_id,
-                caption,
-                attachment=content,
-                attachment_name=filename,
-                attachment_mime=content_type,
-                attachment_size=len(raw),
-            )
+            try:
+                message = await self.create_message(
+                    user.id,
+                    self.conversation_id,
+                    caption,
+                    attachment=content,
+                    attachment_name=filename,
+                    attachment_mime=content_type,
+                    attachment_size=len(raw),
+                    reply_to_message_id=reply_to_message_id,
+                )
+            except ValueError:
+                await self.send_json({'type': 'error', 'error': 'invalid_reply_target'})
+                return
             serialized = MessageSerializer(message, context={'request': self.serializer_request}).data
 
             await self.send_json({'type': 'ack', 'ack': 'received', 'message_id': message.id})
@@ -370,13 +412,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
             filename = self._sanitize_filename(data.get('filename'), fallback='upload.bin')
             content_type = (data.get('content_type') or '').strip().lower()
             caption = (data.get('text') or '').strip()
+            reply_to_message_id = data.get('reply_to_message_id')
             if not content_type or not filename:
                 await self.send_json({'type': 'error', 'error': 'missing_fields'})
                 return
             if not self._is_allowed_upload_mime(content_type):
                 await self.send_json({'type': 'error', 'error': 'unsupported_content_type'})
                 return
-            self._pending_file_meta = {'filename': filename, 'content_type': content_type, 'text': caption}
+            self._pending_file_meta = {'filename': filename, 'content_type': content_type, 'text': caption, 'reply_to_message_id': reply_to_message_id}
             await self.send_json({'type': 'ack', 'ack': 'ready_for_binary'})
             return
 
@@ -458,20 +501,40 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def get_conversation_participant_ids(self, conversation_id: int):
         try:
-            conv = Conversation.objects.select_related('partnership').get(id=conversation_id)
+            conv = Conversation.objects.select_related('partnership', 'goal').prefetch_related('members').get(id=conversation_id)
         except Conversation.DoesNotExist:
             return []
-        return [conv.partnership.user_a_id, conv.partnership.user_b_id]
+        member_ids = list(conv.members.values_list('id', flat=True))
+        if member_ids:
+            return member_ids
+        if conv.partnership_id:
+            return [conv.partnership.user_a_id, conv.partnership.user_b_id]
+        if conv.goal_id:
+            return list(conv.goal.members.values_list('id', flat=True))
+        return []
 
     @database_sync_to_async
     def get_conversation_payload_for_user(self, conversation_id: int, user_id: int):
         try:
-            conv = Conversation.objects.select_related('partnership', 'partnership__user_a', 'partnership__user_b').get(id=conversation_id)
+            conv = Conversation.objects.select_related('partnership', 'partnership__user_a', 'partnership__user_b', 'goal').prefetch_related('members').get(id=conversation_id)
         except Conversation.DoesNotExist:
             return None
-        partnership = conv.partnership
-        partner_user = partnership.user_b if partnership.user_a_id == user_id else partnership.user_a
-        partner_data = UserSerializer(partner_user, context={'request': self.serializer_request}).data if partner_user else {}
+        member_users = list(conv.members.all()) if conv.members.exists() else []
+        if conv.is_group and conv.goal_id:
+            partner_data = {'name': conv.goal.title, 'avatar': None}
+        elif conv.partnership_id:
+            partner_user = conv.partnership.user_b if conv.partnership.user_a_id == user_id else conv.partnership.user_a
+            partner_data = UserSerializer(partner_user, context={'request': self.serializer_request}).data if partner_user else {}
+        elif member_users:
+            partner_data = {'name': ', '.join([u.name for u in member_users]), 'avatar': None}
+        else:
+            partner_data = {}
+        member_ids = list(conv.members.values_list('id', flat=True))
+        if not member_ids:
+            if conv.partnership_id:
+                member_ids = [conv.partnership.user_a_id, conv.partnership.user_b_id]
+            elif conv.goal_id:
+                member_ids = list(conv.goal.members.values_list('id', flat=True))
         last_msg = (
             Message.objects.select_related('sender')
             .filter(conversation_id=conversation_id)
@@ -486,8 +549,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
         return {
             'id': conv.id,
             'partnership': conv.partnership_id,
+            'goal': conv.goal_id,
+            'is_group': conv.is_group,
             'partner_name': partner_data.get('name'),
             'partner_avatar': partner_data.get('avatar'),
+            'display_name': partner_data.get('name'),
+            'member_ids': member_ids,
+            'member_names': [u.name for u in member_users],
             'last_message': MessageSerializer(last_msg, context={'request': self.serializer_request}).data if last_msg else None,
             'unread_count': unread_count,
             'created_at': conv.created_at.isoformat() if conv.created_at else None,
@@ -513,7 +581,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def chat_presence(self, event):
         try:
-            await self.send_json({'type': 'presence', 'online_user_ids': event['online_user_ids']})
+            await self.send_json({'type': 'presence', 'online_user_ids': event['online_user_ids'], 'last_seen_at_by_user_id': event.get('last_seen_at_by_user_id', {})})
         except Exception:
             pass
 
@@ -540,16 +608,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def broadcast_presence(self):
         online_ids = await self.get_online_user_ids(self.conversation_id)
+        last_seen_at_by_user_id = await self.get_last_seen_at_by_user_id(self.conversation_id)
         participants = await self.get_conversation_participant_ids(self.conversation_id)
         if participants:
             online_ids = sorted(set(online_ids) & set(participants))
+            last_seen_at_by_user_id = {str(uid): last_seen_at_by_user_id.get(str(uid)) for uid in participants if str(uid) in last_seen_at_by_user_id}
         await self.channel_layer.group_send(
             self.group_name,
-            {'type': 'chat.presence', 'online_user_ids': online_ids},
+            {'type': 'chat.presence', 'online_user_ids': online_ids, 'last_seen_at_by_user_id': last_seen_at_by_user_id},
         )
 
     def _presence_cache_key(self, conversation_id: int) -> str:
         return f'chat:conversation:{conversation_id}:online_user_ids'
+
+    def _presence_last_seen_cache_key(self, conversation_id: int) -> str:
+        return f'chat:conversation:{conversation_id}:last_seen_at_by_user_id'
 
     @database_sync_to_async
     def get_online_user_ids(self, conversation_id: int):
@@ -558,8 +631,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
         return sorted({int(x) for x in ids})
 
     @database_sync_to_async
+    def get_last_seen_at_by_user_id(self, conversation_id: int):
+        key = self._presence_last_seen_cache_key(conversation_id)
+        raw = cache.get(key) or {}
+        return {str(k): v for k, v in raw.items()}
+
+    @database_sync_to_async
     def set_user_online(self, user_id: int, conversation_id: int, online: bool):
         key = self._presence_cache_key(conversation_id)
+        last_seen_key = self._presence_last_seen_cache_key(conversation_id)
         current = cache.get(key) or []
         s = {int(x) for x in current}
         if online:
@@ -567,14 +647,23 @@ class ChatConsumer(AsyncWebsocketConsumer):
         else:
             s.discard(int(user_id))
         cache.set(key, list(s), timeout=self.PRESENCE_TTL_SECONDS)
+        last_seen = cache.get(last_seen_key) or {}
+        last_seen[str(user_id)] = timezone.now().isoformat()
+        cache.set(last_seen_key, last_seen, timeout=self.PRESENCE_TTL_SECONDS)
 
     @database_sync_to_async
     def user_in_conversation(self, user_id, conversation_id):
         try:
-            conv = Conversation.objects.select_related('partnership__user_a', 'partnership__user_b').get(id=conversation_id)
+            conv = Conversation.objects.select_related('partnership__user_a', 'partnership__user_b', 'goal').prefetch_related('members').get(id=conversation_id)
         except Conversation.DoesNotExist:
             return False
-        return user_id in [conv.partnership.user_a_id, conv.partnership.user_b_id]
+        if conv.members.filter(id=user_id).exists():
+            return True
+        if conv.partnership_id and user_id in [conv.partnership.user_a_id, conv.partnership.user_b_id]:
+            return True
+        if conv.goal_id and conv.goal.members.filter(id=user_id).exists():
+            return True
+        return False
 
     @database_sync_to_async
     def create_message(
@@ -587,13 +676,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
         attachment_name: str = '',
         attachment_mime: str = '',
         attachment_size: int | None = None,
+        reply_to_message_id: int | None = None,
     ):
         user = User.objects.get(id=user_id)
         conversation = Conversation.objects.get(id=conversation_id)
+        reply_to_message = None
+        if reply_to_message_id:
+            reply_to_message = Message.objects.filter(id=reply_to_message_id, conversation_id=conversation_id).first()
+            if not reply_to_message:
+                raise ValueError('Reply target must belong to the same conversation.')
         return Message.objects.create(
             conversation=conversation,
             sender=user,
             text=text or '',
+            reply_to_message=reply_to_message,
+            is_a_reply=bool(reply_to_message),
             attachment=attachment,
             attachment_name=attachment_name or '',
             attachment_mime=attachment_mime or '',
