@@ -157,10 +157,12 @@ def sync_goal_group_conversation(sender, instance: GoalMembership, created: bool
     if len(member_ids) < 2:
         return
 
-    conversation, _ = Conversation.objects.get_or_create(goal=goal, defaults={'is_group': True})
+    conversation, _ = Conversation.objects.get_or_create(goal=goal, defaults={'is_group': True, 'name': goal.title})
     if not conversation.is_group:
         conversation.is_group = True
         conversation.save(update_fields=['is_group', 'updated_at'])
+    if not (conversation.name or '').strip() and goal.title:
+        Conversation.objects.filter(id=conversation.id).update(name=goal.title)
 
     for member_id in member_ids:
         ConversationMembership.objects.get_or_create(
