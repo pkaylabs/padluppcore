@@ -196,7 +196,7 @@ REST_FRAMEWORK = {
 }
 # knox - token expiry
 REST_KNOX = {
-    'TOKEN_TTL': timedelta(hours=2),
+    'TOKEN_TTL': timedelta(hours=6),
 }
 
 # django cors headers settings
