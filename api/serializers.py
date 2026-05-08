@@ -511,10 +511,15 @@ class ConversationMediaSerializer(serializers.ModelSerializer):
 		return url
 
 
+class ConversationRenameRequestSerializer(serializers.Serializer):
+	name = serializers.CharField(max_length=255, allow_blank=False, trim_whitespace=True)
+
+
 class ConversationSerializer(serializers.ModelSerializer):
 	last_message = serializers.SerializerMethodField()
 	unread_count = serializers.SerializerMethodField()
 	goal = serializers.PrimaryKeyRelatedField(read_only=True)
+	name = serializers.CharField(read_only=True)
 	is_group = serializers.BooleanField(read_only=True)
 	members = UserSerializer(many=True, read_only=True)
 
@@ -524,6 +529,7 @@ class ConversationSerializer(serializers.ModelSerializer):
 			'id',
 			'partnership',
 			'goal',
+			'name',
 			'is_group',
 			'members',
 			'last_message',
