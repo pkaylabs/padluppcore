@@ -3,6 +3,7 @@ from django.contrib import admin
 from .models import (
 	Profile,
 	Goal,
+	GoalMembership,
 	CheckinReminderLog,
 	Partnership,
 	Event,
@@ -11,6 +12,7 @@ from .models import (
 	Task,
 	SubTask,
 	TimerSession,
+	ConversationMembership,
 	UserDailyActivity,
 	Evidence,
 	Notification,
@@ -29,9 +31,9 @@ class ProfileAdmin(admin.ModelAdmin):
 
 @admin.register(Goal)
 class GoalAdmin(admin.ModelAdmin):
-	list_display = ('id', 'user', 'title', 'category', 'importance', 'checkin_frequency', 'is_active', 'start_date', 'start_time', 'target_date')
+	list_display = ('id', 'user', 'title', 'category', 'importance', 'checkin_frequency', 'is_public', 'is_shared', 'start_date', 'start_time', 'target_date')
 	search_fields = ('title', 'user__email', 'user__name')
-	list_filter = ('is_active',)
+	list_filter = ('is_active', 'is_public', 'is_shared')
 
 
 @admin.register(Partnership)
@@ -108,13 +110,14 @@ class NotificationAdmin(admin.ModelAdmin):
 
 @admin.register(Conversation)
 class ConversationAdmin(admin.ModelAdmin):
-	list_display = ('id', 'partnership', 'created_at')
-	search_fields = ('partnership__user_a__email', 'partnership__user_b__email')
+	list_display = ('id', 'partnership', 'goal', 'is_group', 'created_at')
+	search_fields = ('partnership__user_a__email', 'partnership__user_b__email', 'goal__title')
+	list_filter = ('is_group',)
 
 
 @admin.register(Message)
 class MessageAdmin(admin.ModelAdmin):
-	list_display = ('id', 'conversation', 'sender', 'text', 'is_read', 'created_at')
+	list_display = ('id', 'conversation', 'sender', 'is_a_reply', 'reply_to_message', 'text', 'is_read', 'created_at')
 	search_fields = ('sender__email', 'text')
 	list_filter = ('is_read',)
 
@@ -144,4 +147,16 @@ class CheckinReminderLogAdmin(admin.ModelAdmin):
 	list_display = ('id', 'goal', 'user', 'reminder_for_date', 'frequency', 'created_at')
 	search_fields = ('goal__title', 'user__email', 'user__name')
 	list_filter = ('reminder_for_date', 'frequency')
+
+
+@admin.register(GoalMembership)
+class GoalMembershipAdmin(admin.ModelAdmin):
+	list_display = ('id', 'goal', 'user', 'added_by', 'created_at')
+	search_fields = ('goal__title', 'user__email', 'user__name')
+
+
+@admin.register(ConversationMembership)
+class ConversationMembershipAdmin(admin.ModelAdmin):
+	list_display = ('id', 'conversation', 'user', 'added_by', 'created_at')
+	search_fields = ('conversation__id', 'user__email', 'user__name')
 
