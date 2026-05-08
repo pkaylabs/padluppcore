@@ -3,6 +3,7 @@ from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.db import IntegrityError
 from django.db import models
+from django.db import transaction
 import secrets
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -24,12 +25,14 @@ from padluppcore.utils.email import EmailSendError, send_mailgun_email
 from .activity import dt_to_local_date, get_user_tzinfo, record_user_activity
 
 from accounts.models import AccountDeletionRequest, PasswordResetOTP, User
-from .models import BuddyRequest, Conversation, Evidence, Event, Goal, Match, Notification, Partnership, Profile, SubTask, Task, TimerSession, Message, UserDailyActivity, Waitlister
+from .models import BuddyRequest, Conversation, ConversationMembership, Evidence, Event, Goal, GoalMembership, Match, Message, Notification, Partnership, Profile, SubTask, Task, TimerSession, UserDailyActivity, Waitlister
 from .serializers import (
 	BuddyConnectSerializer,
 	BuddyFinderProfileSerializer,
 	BuddyRequestSerializer,
 	BuddyRequestActionResponseSerializer,
+	BuddyProfileResponseSerializer,
+	ConversationMediaSerializer,
 	DetailResponseSerializer,
 	UserAvatarRequestSerializer,
 	ProfileExperienceRequestSerializer,
@@ -39,6 +42,10 @@ from .serializers import (
 	EvidenceSerializer,
 	EventxSerializer,
 	GoalSerializer,
+	GoalJoinRequestSerializer,
+	GoalJoinResponseSerializer,
+	GoalShareRequestSerializer,
+	GoalShareResponseSerializer,
 	MatchSerializer,
 	NotificationSerializer,
 	PartnershipSerializer,
@@ -50,6 +57,7 @@ from .serializers import (
 	UserSerializer,
 	WaitlisterSerializer,
 	LongestStreakResponseSerializer,
+	ConversationRenameRequestSerializer,
 )
 from .serializers import (
 	GoogleAuthRequestSerializer,
@@ -71,6 +79,63 @@ WAITLIST_BETA_MESSAGE = (
 	"Thanks for trying Padlupp. We're currently in a limited beta and only waitlisted "
 	"users can sign up or sign in. Join the waitlist and we'll notify you when we open to everyone."
 )
+
+
+def _app_base_url() -> str:
+	return (getattr(settings, 'PADLUPP_APP_URL', '') or 'https://app.padlupp.com').rstrip('/')
+
+
+def _goal_direct_link(goal_id: int) -> str:
+	return f'{_app_base_url()}/goals/{goal_id}'
+
+
+def _goal_invite_link(shared_id) -> str:
+	return f'{_app_base_url()}/goals/?shared_id={shared_id}'
+
+
+def _user_is_member_of_conversation(user_id: int, conversation: Conversation) -> bool:
+	if conversation.members.filter(id=user_id).exists():
+		return True
+	if conversation.partnership_id and user_id in [conversation.partnership.user_a_id, conversation.partnership.user_b_id]:
+		return True
+	if conversation.goal_id and conversation.goal.members.filter(id=user_id).exists():
+		return True
+	return False
+
+
+def _goal_member_ids(goal: Goal) -> list[int]:
+	ids = list(goal.members.values_list('id', flat=True))
+	if goal.user_id and goal.user_id not in ids:
+		ids.append(goal.user_id)
+	if goal.partnership_id:
+		for uid in [goal.partnership.user_a_id, goal.partnership.user_b_id]:
+			if uid and uid not in ids:
+				ids.append(uid)
+	return ids
+
+
+def _add_goal_member(goal: Goal, user: User, added_by: User | None = None) -> bool:
+	membership, created = GoalMembership.objects.get_or_create(
+		goal=goal,
+		user=user,
+		defaults={'added_by': added_by},
+	)
+	if not created and added_by and not membership.added_by_id:
+		membership.added_by = added_by
+		membership.save(update_fields=['added_by', 'updated_at'])
+	return created
+
+
+def _add_conversation_member(conversation: Conversation, user: User, added_by: User | None = None) -> bool:
+	membership, created = ConversationMembership.objects.get_or_create(
+		conversation=conversation,
+		user=user,
+		defaults={'added_by': added_by},
+	)
+	if not created and added_by and not membership.added_by_id:
+		membership.added_by = added_by
+		membership.save(update_fields=['added_by', 'updated_at'])
+	return created
 
 
 def _normalize_email(email: str | None) -> str:
@@ -299,6 +364,14 @@ class BuddyViewSet(viewsets.ViewSet):
 		partnership, _ = Partnership.objects.get_or_create(user_a=user_a, user_b=user_b)
 		# Ensure a conversation exists (matches app behavior)
 		conversation, _ = Conversation.objects.get_or_create(partnership=partnership)
+		_add_conversation_member(conversation, user_a, request.user)
+		_add_conversation_member(conversation, user_b, request.user)
+		if buddy_request.message.strip() and not conversation.messages.exists():
+			Message.objects.create(
+				conversation=conversation,
+				sender=buddy_request.from_user,
+				text=buddy_request.message.strip(),
+			)
 		# Notify both users' conversations websockets so the new conversation appears.
 		self._broadcast_conversation_update(conversation_id=conversation.id, user_ids=[user_a.id, user_b.id])
 
@@ -367,6 +440,22 @@ class BuddyViewSet(viewsets.ViewSet):
 		buddy_request.save(update_fields=['status', 'responded_at', 'updated_at'])
 		return Response({'detail': 'Rejected.'}, status=status.HTTP_200_OK)
 
+
+	@extend_schema(
+		responses={200: BuddyProfileResponseSerializer, 404: DetailResponseSerializer},
+		description='Get another user\'s buddy profile.'
+	)
+	@action(detail=False, methods=['get'], url_path=r'profile/(?P<user_id>[^/.]+)')
+	def profile(self, request, user_id=None):
+		if not user_id:
+			return Response({'detail': 'user_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
+		if str(request.user.id) == str(user_id):
+			return Response({'detail': 'Use your own profile endpoint for the current user.'}, status=status.HTTP_400_BAD_REQUEST)
+		other_user = User.objects.filter(id=user_id, deleted=False).first()
+		if not other_user:
+			return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+		profile, _ = Profile.objects.get_or_create(user=other_user)
+		return Response(BuddyProfileResponseSerializer({'user': other_user, 'profile': profile}, context={'request': request}).data)
 
 	@extend_schema(
 		responses={200: ProfileSerializer(many=True)},
@@ -1127,9 +1216,10 @@ class GoalViewSet(viewsets.ModelViewSet):
 
 	def get_queryset(self):
 		user = self.request.user
-		# Get all goals where user is owner OR is in the partnership
+		# Get goals the user owns, participates in, or has joined as a member.
 		return Goal.objects.filter(
 			models.Q(user=user) |
+			models.Q(members=user) |
 			models.Q(partnership__user_a=user) |
 			models.Q(partnership__user_b=user)
 		).order_by('-created_at')
@@ -1140,7 +1230,12 @@ class GoalViewSet(viewsets.ModelViewSet):
 		partnership = None
 		if conversation:
 			partnership = getattr(conversation, 'partnership', None)
-		serializer.save(user=self.request.user, partnership=partnership)
+		goal = serializer.save(user=self.request.user, partnership=partnership)
+		_add_goal_member(goal, self.request.user, self.request.user)
+		if partnership:
+			_add_goal_member(goal, partnership.user_a, self.request.user)
+			_add_goal_member(goal, partnership.user_b, self.request.user)
+		goal.refresh_from_db()
 
 	def perform_update(self, serializer):
 		# Only allow update if user is owner or in the partnership
@@ -1149,9 +1244,131 @@ class GoalViewSet(viewsets.ModelViewSet):
 		if goal.user == user or (
 			goal.partnership and (goal.partnership.user_a == user or goal.partnership.user_b == user)
 		):
-			serializer.save()
+			goal = serializer.save()
+			if goal.partnership:
+				_add_goal_member(goal, goal.partnership.user_a, user)
+				_add_goal_member(goal, goal.partnership.user_b, user)
 		else:
 			raise PermissionDenied("You do not have permission to update this goal.")
+
+	@extend_schema(
+		request=GoalJoinRequestSerializer,
+		responses={200: GoalJoinResponseSerializer, 400: DetailResponseSerializer, 403: DetailResponseSerializer, 404: DetailResponseSerializer},
+		description='Join a public goal using its shared_id.'
+	)
+	@action(detail=False, methods=['post'], url_path='join-goal')
+	def join_goal(self, request):
+		serializer = GoalJoinRequestSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		shared_id = serializer.validated_data['shared_id']
+		goal = Goal.objects.filter(shared_id=shared_id).select_related('user', 'partnership').first()
+		if not goal:
+			return Response({'detail': 'Goal not found.'}, status=status.HTTP_404_NOT_FOUND)
+		if not goal.is_public:
+			return Response({'detail': 'This goal is not public.'}, status=status.HTTP_403_FORBIDDEN)
+
+		_add_goal_member(goal, request.user, request.user)
+		goal.is_shared = True
+		goal.save(update_fields=['is_shared', 'updated_at'])
+		return Response(
+			{
+				'detail': 'Joined goal.',
+				'goal_id': goal.id,
+				'direct_link': _goal_direct_link(goal.id),
+			},
+			status=status.HTTP_200_OK,
+		)
+
+	@extend_schema(
+		request=GoalShareRequestSerializer,
+		responses={200: GoalShareResponseSerializer, 400: DetailResponseSerializer, 403: DetailResponseSerializer},
+		description='Share a goal with existing users and invite new users by email.'
+	)
+	@action(detail=True, methods=['post'], url_path='share')
+	def share(self, request, pk=None):
+		goal = self.get_object()
+		if goal.user_id != request.user.id and not (goal.partnership and request.user.id in [goal.partnership.user_a_id, goal.partnership.user_b_id]):
+			return Response({'detail': 'You do not have permission to share this goal.'}, status=status.HTTP_403_FORBIDDEN)
+
+		serializer = GoalShareRequestSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		emails = list(dict.fromkeys([email.strip().lower() for email in serializer.validated_data['emails'] if email.strip()]))
+		message = (serializer.validated_data.get('message') or '').strip()
+		added_user_ids: list[int] = []
+		invited_emails: list[str] = []
+		goal_url = _goal_direct_link(goal.id)
+		inviter_name = (getattr(request.user, 'name', '') or getattr(request.user, 'email', '') or 'Someone').strip()
+
+		for email in emails:
+			if email == (request.user.email or '').strip().lower():
+				continue
+			user = User.objects.filter(email__iexact=email, deleted=False).first()
+			if user:
+				created = _add_goal_member(goal, user, request.user)
+				if created:
+					added_user_ids.append(user.id)
+					Notification.objects.create(
+						user=user,
+						type='goal_shared',
+						payload={
+							'goal_id': goal.id,
+							'goal_title': goal.title,
+							'from_user_id': request.user.id,
+							'from_user_name': inviter_name,
+							'link': goal_url,
+							'message': message,
+						},
+					)
+					subject = f'{inviter_name} added you to a goal on Padlupp'
+					text = (
+						f'Hi {getattr(user, "name", "there") or "there"},\n\n'
+						f'{inviter_name} added you to "{goal.title}" on Padlupp.\n\n'
+					)
+					if message:
+						text += f'Message: {message}\n\n'
+					text += f'Open the goal: {goal_url}\n'
+					try:
+						send_mailgun_email(
+							to_email=user.email,
+							subject=subject,
+							text=text,
+							tags=['goal_share', 'existing_user'],
+						)
+					except EmailSendError:
+						pass
+				continue
+
+			invited_emails.append(email)
+			Waitlister.objects.get_or_create(email=email, defaults={'name': ''})
+			subject = f'You were invited to Padlupp by {inviter_name}'
+			text = (
+				f'Hi there,\n\n{inviter_name} invited you to Padlupp and shared "{goal.title}" with you.\n\n'
+			)
+			if message:
+				text += f'Message: {message}\n\n'
+			text += f'Join Padlupp to view the goal: {_app_base_url()}\n'
+			try:
+				send_mailgun_email(
+					to_email=email,
+					subject=subject,
+					text=text,
+					tags=['goal_share', 'invite'],
+				)
+			except EmailSendError:
+				pass
+
+		goal.is_shared = True
+		goal.save(update_fields=['is_shared', 'updated_at'])
+		return Response(
+			{
+				'detail': 'Goal shared.',
+				'goal_id': goal.id,
+				'direct_link': goal_url,
+				'added_user_ids': added_user_ids,
+				'invited_emails': invited_emails,
+			},
+			status=status.HTTP_200_OK,
+		)
 
 
 class PartnershipViewSet(viewsets.ModelViewSet):
@@ -1475,13 +1692,49 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
 	def get_queryset(self):
 		user = self.request.user
 		return Conversation.objects.filter(
-			models.Q(partnership__user_a=user) | models.Q(partnership__user_b=user)
+			models.Q(members=user) |
+			models.Q(partnership__user_a=user) |
+			models.Q(partnership__user_b=user) |
+			models.Q(goal__members=user)
 		).annotate(
 			unread_count=models.Count(
 				'messages',
 				filter=models.Q(messages__is_read=False) & ~models.Q(messages__sender=user),
 			)
 		).order_by('-created_at')
+
+	@extend_schema(
+		responses={200: ConversationMediaSerializer(many=True)},
+		description='List media attachments for a conversation.'
+	)
+	@action(detail=True, methods=['get'], url_path='media')
+	def media(self, request, pk=None):
+		conversation = self.get_object()
+		qs = (
+			conversation.messages.select_related('sender')
+			.exclude(models.Q(attachment__isnull=True) | models.Q(attachment=''))
+			.order_by('-created_at')
+		)
+		return Response(ConversationMediaSerializer(qs, many=True, context={'request': request}).data)
+
+	@extend_schema(
+		request=ConversationRenameRequestSerializer,
+		responses={200: ConversationSerializer, 400: DetailResponseSerializer, 403: DetailResponseSerializer},
+		description='Rename a group conversation.'
+	)
+	@action(detail=True, methods=['post'], url_path='rename-group')
+	def rename_group(self, request, pk=None):
+		conversation = self.get_object()
+		if not conversation.is_group:
+			return Response({'detail': 'Only group conversations can be renamed.'}, status=status.HTTP_400_BAD_REQUEST)
+		if not _user_is_member_of_conversation(request.user.id, conversation):
+			return Response({'detail': 'You are not part of this conversation.'}, status=status.HTTP_403_FORBIDDEN)
+
+		serializer = ConversationRenameRequestSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		conversation.name = serializer.validated_data['name'].strip()
+		conversation.save(update_fields=['name', 'updated_at'])
+		return Response(ConversationSerializer(conversation, context={'request': request}).data, status=status.HTTP_200_OK)
 
 
 class MessageViewSet(viewsets.ModelViewSet):
@@ -1491,8 +1744,10 @@ class MessageViewSet(viewsets.ModelViewSet):
 	def get_queryset(self):
 		user = self.request.user
 		qs = Message.objects.filter(
+			models.Q(conversation__members=user) |
 			models.Q(conversation__partnership__user_a=user) |
-			models.Q(conversation__partnership__user_b=user)
+			models.Q(conversation__partnership__user_b=user) |
+			models.Q(conversation__goal__members=user)
 		).order_by('-created_at')
 		conversation_id = self.request.query_params.get('conversation')
 		if conversation_id:
@@ -1503,8 +1758,8 @@ class MessageViewSet(viewsets.ModelViewSet):
 		conversation = serializer.validated_data['conversation']
 		user = self.request.user
 		# Ensure user belongs to the conversation's partnership
-		if user not in [conversation.partnership.user_a, conversation.partnership.user_b]:
-			raise PermissionError('You are not part of this conversation.')
+		if not _user_is_member_of_conversation(user.id, conversation):
+			raise PermissionDenied('You are not part of this conversation.')
 		message = serializer.save(sender=user)
 		self._broadcast_conversation_update(conversation_id=conversation.id)
 		return message
@@ -1514,8 +1769,13 @@ class MessageViewSet(viewsets.ModelViewSet):
 		channel_layer = get_channel_layer()
 		if not channel_layer:
 			return
-		conv = Conversation.objects.select_related('partnership').get(id=conversation_id)
-		user_ids = [conv.partnership.user_a_id, conv.partnership.user_b_id]
+		conv = Conversation.objects.select_related('partnership', 'goal').prefetch_related('members').get(id=conversation_id)
+		user_ids = list(conv.members.values_list('id', flat=True))
+		if not user_ids:
+			if conv.partnership_id:
+				user_ids = [conv.partnership.user_a_id, conv.partnership.user_b_id]
+			elif conv.goal_id:
+				user_ids = list(conv.goal.members.values_list('id', flat=True))
 		last_msg = (
 			Message.objects.select_related('sender')
 			.filter(conversation_id=conversation_id)
@@ -1523,6 +1783,7 @@ class MessageViewSet(viewsets.ModelViewSet):
 			.first()
 		)
 		last_message_payload = MessageSerializer(last_msg, context={'request': getattr(self, 'request', None)}).data if last_msg else None
+		member_names = [u.name for u in conv.members.all()] if conv.members.exists() else []
 		for uid in user_ids:
 			unread_count = (
 				Message.objects.filter(conversation_id=conversation_id, is_read=False)
@@ -1532,6 +1793,12 @@ class MessageViewSet(viewsets.ModelViewSet):
 			payload = {
 				'id': conv.id,
 				'partnership': conv.partnership_id,
+				'goal': conv.goal_id,
+				'is_group': conv.is_group,
+				'display_name': (conv.name or conv.goal.title) if conv.is_group else None,
+				'name': conv.name,
+				'member_ids': user_ids,
+				'member_names': member_names,
 				'last_message': last_message_payload,
 				'unread_count': unread_count,
 				'created_at': conv.created_at.isoformat() if conv.created_at else None,
@@ -1554,7 +1821,7 @@ class MessageViewSet(viewsets.ModelViewSet):
 		# Only allow the partner (not sender) to mark as read
 		if message.sender == user:
 			return Response({'detail': 'Sender cannot mark message as read.'}, status=status.HTTP_400_BAD_REQUEST)
-		if user not in [message.conversation.partnership.user_a, message.conversation.partnership.user_b]:
+		if not _user_is_member_of_conversation(user.id, message.conversation):
 			return Response({'detail': 'You are not part of this conversation.'}, status=status.HTTP_403_FORBIDDEN)
 		message.is_read = True
 		message.save(update_fields=['is_read'])
