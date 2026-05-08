@@ -1,0 +1,5354 @@
+openapi: 3.0.3
+info:
+  title: PADLUPP API
+  version: 1.0.0
+  description: PADLUPP API
+paths:
+  /api-v1/auth/delete-account/:
+    post:
+      operationId: auth_delete_account_create
+      description: Receive an account deletion request for the current user.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteAccountRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/DeleteAccountRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/DeleteAccountRequest'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/auth/forgot-password/request-otp/:
+    post:
+      operationId: auth_forgot_password_request_otp_create
+      description: 'Forgot password: request an OTP sent to the provided email.'
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordRequestOtp'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordRequestOtp'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordRequestOtp'
+        required: true
+      security:
+      - knoxApiToken: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+        '502':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/auth/forgot-password/reset-password/:
+    post:
+      operationId: auth_forgot_password_reset_password_create
+      description: 'Forgot password: reset password using the reset token from OTP
+        verification.'
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordResetPassword'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordResetPassword'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordResetPassword'
+        required: true
+      security:
+      - knoxApiToken: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/auth/forgot-password/verify-otp/:
+    post:
+      operationId: auth_forgot_password_verify_otp_create
+      description: 'Forgot password: verify OTP and receive a reset token.'
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordVerifyOtp'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordVerifyOtp'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordVerifyOtp'
+        required: true
+      security:
+      - knoxApiToken: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForgotPasswordVerifyOtpResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/auth/google-auth/:
+    post:
+      operationId: auth_google_auth_create
+      description: Google auth (signup-or-signin). Verifies a Google `id_token`. If
+        the user exists, returns 200 with a Knox token. Otherwise creates the user
+        + Profile and returns 201.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoogleAuthRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/GoogleAuthRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/GoogleAuthRequest'
+        required: true
+      security:
+      - knoxApiToken: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleAuthResponse'
+          description: ''
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleAuthResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/auth/google-signin/:
+    post:
+      operationId: auth_google_signin_create
+      description: Google sign-in. Verifies a Google `id_token`, logs the user in,
+        and returns a Knox token. Fails if the user does not already exist.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoogleAuthRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/GoogleAuthRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/GoogleAuthRequest'
+        required: true
+      security:
+      - knoxApiToken: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleAuthResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/auth/google-signup/:
+    post:
+      operationId: auth_google_signup_create
+      description: Google sign-up. Verifies a Google `id_token`, creates a user if
+        the email is unused, creates a Profile, and returns a Knox token.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoogleAuthRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/GoogleAuthRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/GoogleAuthRequest'
+        required: true
+      security:
+      - knoxApiToken: []
+      - {}
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleAuthResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/auth/invite/:
+    post:
+      operationId: auth_invite_create
+      description: Invite someone to Padlupp by email. Sends an invite email with
+        the signup link and adds the invitee to the waitlist so they can sign up during
+        the beta.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InviteUserRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/InviteUserRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/InviteUserRequest'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InviteUserResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+        '502':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/auth/login/:
+    post:
+      operationId: auth_login_create
+      description: Login with email and password. Returns user info and token.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+        required: true
+      security:
+      - knoxApiToken: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+          description: ''
+  /api-v1/auth/logout/:
+    post:
+      operationId: auth_logout_create
+      description: Logout endpoint. Invalidates the token. Returns a detail message.
+      tags:
+      - auth
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogoutResponse'
+          description: ''
+  /api-v1/auth/user/:
+    patch:
+      operationId: auth_user_partial_update
+      description: Patch update the current user.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedUserUpdateRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedUserUpdateRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedUserUpdateRequest'
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/auth/userprofile/:
+    get:
+      operationId: auth_userprofile_retrieve
+      description: Get current user profile.
+      tags:
+      - auth
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Profile'
+          description: ''
+  /api-v1/buddies/{id}/accept/:
+    post:
+      operationId: buddies_accept_create
+      description: Accept a buddy request and create a partnership.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - buddies
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BuddyRequestActionResponse'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/buddies/{id}/reject/:
+    post:
+      operationId: buddies_reject_create
+      description: Reject a buddy request.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - buddies
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BuddyRequestActionResponse'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/buddies/connect/:
+    post:
+      operationId: buddies_connect_create
+      description: Send a buddy connection request to another user.
+      tags:
+      - buddies
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BuddyConnect'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BuddyConnect'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BuddyConnect'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BuddyRequest'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/buddies/connections/:
+    get:
+      operationId: buddies_connections_list
+      description: Return the current user's buddy connections as profiles.
+      tags:
+      - buddies
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Profile'
+          description: ''
+  /api-v1/buddies/finder/:
+    get:
+      operationId: buddies_finder_list
+      description: List profiles with similar experience and pending requests.
+      tags:
+      - buddies
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BuddyFinderProfile'
+          description: ''
+  /api-v1/buddies/invitations/:
+    get:
+      operationId: buddies_invitations_list
+      description: List pending buddy requests sent to the current user.
+      tags:
+      - buddies
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BuddyRequest'
+          description: ''
+  /api-v1/buddies/profile/{user_id}/:
+    get:
+      operationId: buddies_profile_retrieve
+      description: Get another user's buddy profile.
+      parameters:
+      - in: path
+        name: user_id
+        schema:
+          type: string
+        required: true
+      tags:
+      - buddies
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BuddyProfileResponse'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/buddies/search/:
+    get:
+      operationId: buddies_search_list
+      description: Search within the current user's buddy connections by name. Splits
+        `query` into words and matches if any word appears in the buddy's name.
+      parameters:
+      - in: query
+        name: query
+        schema:
+          type: string
+        description: Search text. Split into words; matches buddies where name contains
+          any word.
+        required: true
+      tags:
+      - buddies
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Profile'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/conversations/:
+    get:
+      operationId: conversations_list
+      parameters:
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - conversations
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedConversationList'
+          description: ''
+  /api-v1/conversations/{id}/:
+    get:
+      operationId: conversations_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this conversation.
+        required: true
+      tags:
+      - conversations
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Conversation'
+          description: ''
+  /api-v1/conversations/{id}/media/:
+    get:
+      operationId: conversations_media_list
+      description: List media attachments for a conversation.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this conversation.
+        required: true
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - conversations
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedConversationMediaList'
+          description: ''
+  /api-v1/conversations/{id}/rename-group/:
+    post:
+      operationId: conversations_rename_group_create
+      description: Rename a group conversation.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this conversation.
+        required: true
+      tags:
+      - conversations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConversationRenameRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ConversationRenameRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ConversationRenameRequest'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Conversation'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/cron/checkin-reminders/:
+    post:
+      operationId: cron_checkin_reminders_create
+      description: Send check-in reminders for goals whose cadence matches tomorrow.
+      tags:
+      - cron
+      security:
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api-v1/cron/nudge-inactive-users/:
+    post:
+      operationId: cron_nudge_inactive_users_create
+      description: |-
+        Send nudges to users who have been inactive for a configurable threshold.
+
+        This endpoint is intentionally unauthenticated so a cron job can call it directly.
+        It is idempotent for a given user/inactivity span via InactivityNudgeLog.
+      tags:
+      - cron
+      security:
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api-v1/events/:
+    get:
+      operationId: events_list
+      parameters:
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - events
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedEventxList'
+          description: ''
+    post:
+      operationId: events_create
+      tags:
+      - events
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Eventx'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Eventx'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Eventx'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Eventx'
+          description: ''
+  /api-v1/events/{id}/:
+    get:
+      operationId: events_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - events
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Eventx'
+          description: ''
+    put:
+      operationId: events_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - events
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Eventx'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Eventx'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Eventx'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Eventx'
+          description: ''
+    patch:
+      operationId: events_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - events
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedEventx'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedEventx'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedEventx'
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Eventx'
+          description: ''
+    delete:
+      operationId: events_destroy
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - events
+      security:
+      - knoxApiToken: []
+      responses:
+        '204':
+          description: No response body
+  /api-v1/events/{id}/join/:
+    post:
+      operationId: events_join_create
+      description: Join the event as a participant.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - events
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Eventx'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Eventx'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Eventx'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Eventx'
+          description: ''
+  /api-v1/events/created/:
+    get:
+      operationId: events_created_list
+      description: Get events created by the user.
+      parameters:
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - events
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedEventxList'
+          description: ''
+  /api-v1/events/participating/:
+    get:
+      operationId: events_participating_list
+      description: Get events where the user is a participant.
+      parameters:
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - events
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedEventxList'
+          description: ''
+  /api-v1/evidences/:
+    get:
+      operationId: evidences_list
+      parameters:
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - evidences
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedEvidenceList'
+          description: ''
+    post:
+      operationId: evidences_create
+      tags:
+      - evidences
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Evidence'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Evidence'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Evidence'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Evidence'
+          description: ''
+  /api-v1/evidences/{id}/:
+    get:
+      operationId: evidences_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - evidences
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Evidence'
+          description: ''
+    put:
+      operationId: evidences_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - evidences
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Evidence'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Evidence'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Evidence'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Evidence'
+          description: ''
+    patch:
+      operationId: evidences_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - evidences
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedEvidence'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedEvidence'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedEvidence'
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Evidence'
+          description: ''
+    delete:
+      operationId: evidences_destroy
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - evidences
+      security:
+      - knoxApiToken: []
+      responses:
+        '204':
+          description: No response body
+  /api-v1/goals/:
+    get:
+      operationId: goals_list
+      parameters:
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - goals
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedGoalList'
+          description: ''
+    post:
+      operationId: goals_create
+      tags:
+      - goals
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Goal'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Goal'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Goal'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Goal'
+          description: ''
+  /api-v1/goals/{id}/:
+    get:
+      operationId: goals_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - goals
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Goal'
+          description: ''
+    put:
+      operationId: goals_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - goals
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Goal'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Goal'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Goal'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Goal'
+          description: ''
+    patch:
+      operationId: goals_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - goals
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedGoal'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedGoal'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedGoal'
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Goal'
+          description: ''
+    delete:
+      operationId: goals_destroy
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - goals
+      security:
+      - knoxApiToken: []
+      responses:
+        '204':
+          description: No response body
+  /api-v1/goals/{id}/share/:
+    post:
+      operationId: goals_share_create
+      description: Share a goal with existing users and invite new users by email.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - goals
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoalShareRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/GoalShareRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/GoalShareRequest'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoalShareResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/goals/join-goal/:
+    post:
+      operationId: goals_join_goal_create
+      description: Join a public goal using its shared_id.
+      tags:
+      - goals
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoalJoinRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/GoalJoinRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/GoalJoinRequest'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoalJoinResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/matches/:
+    get:
+      operationId: matches_list
+      parameters:
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - matches
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedMatchList'
+          description: ''
+    post:
+      operationId: matches_create
+      tags:
+      - matches
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Match'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Match'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Match'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Match'
+          description: ''
+  /api-v1/matches/{id}/:
+    get:
+      operationId: matches_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - matches
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Match'
+          description: ''
+    put:
+      operationId: matches_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - matches
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Match'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Match'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Match'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Match'
+          description: ''
+    patch:
+      operationId: matches_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - matches
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedMatch'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedMatch'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedMatch'
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Match'
+          description: ''
+    delete:
+      operationId: matches_destroy
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - matches
+      security:
+      - knoxApiToken: []
+      responses:
+        '204':
+          description: No response body
+  /api-v1/matches/discover/:
+    get:
+      operationId: matches_discover_list
+      description: Discover profiles not swiped or partnered yet.
+      parameters:
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - matches
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedProfileList'
+          description: ''
+  /api-v1/messages/:
+    get:
+      operationId: messages_list
+      parameters:
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - messages
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedMessageList'
+          description: ''
+    post:
+      operationId: messages_create
+      tags:
+      - messages
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Message'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Message'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Message'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+          description: ''
+  /api-v1/messages/{id}/:
+    get:
+      operationId: messages_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - messages
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+          description: ''
+    put:
+      operationId: messages_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - messages
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Message'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Message'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Message'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+          description: ''
+    patch:
+      operationId: messages_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - messages
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedMessage'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedMessage'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedMessage'
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+          description: ''
+    delete:
+      operationId: messages_destroy
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - messages
+      security:
+      - knoxApiToken: []
+      responses:
+        '204':
+          description: No response body
+  /api-v1/messages/{id}/mark_read/:
+    post:
+      operationId: messages_mark_read_create
+      description: Mark a message as read by the recipient.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - messages
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Message'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Message'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Message'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/notifications/:
+    get:
+      operationId: notifications_list
+      parameters:
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - notifications
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedNotificationList'
+          description: ''
+    post:
+      operationId: notifications_create
+      tags:
+      - notifications
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Notification'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Notification'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Notification'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+          description: ''
+  /api-v1/notifications/{id}/:
+    get:
+      operationId: notifications_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - notifications
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+          description: ''
+    put:
+      operationId: notifications_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - notifications
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Notification'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Notification'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Notification'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+          description: ''
+    patch:
+      operationId: notifications_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - notifications
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedNotification'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedNotification'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedNotification'
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+          description: ''
+    delete:
+      operationId: notifications_destroy
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - notifications
+      security:
+      - knoxApiToken: []
+      responses:
+        '204':
+          description: No response body
+  /api-v1/notifications/{id}/mark_read/:
+    post:
+      operationId: notifications_mark_read_create
+      description: Mark a single notification as read.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - notifications
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Notification'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Notification'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Notification'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+          description: ''
+  /api-v1/notifications/mark_all_read/:
+    post:
+      operationId: notifications_mark_all_read_create
+      description: Mark all notifications as read for current user.
+      tags:
+      - notifications
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Notification'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Notification'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Notification'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationMarkAllReadResponse'
+          description: ''
+  /api-v1/onboarding/profile/:
+    get:
+      operationId: onboarding_profile_retrieve
+      description: Get current user profile.
+      tags:
+      - onboarding
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Profile'
+          description: ''
+    put:
+      operationId: onboarding_profile_update
+      description: Update entire profile.
+      tags:
+      - onboarding
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Profile'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Profile'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Profile'
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Profile'
+          description: ''
+    patch:
+      operationId: onboarding_profile_partial_update
+      description: Partially update profile.
+      tags:
+      - onboarding
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedProfile'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedProfile'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedProfile'
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Profile'
+          description: ''
+  /api-v1/onboarding/register/:
+    post:
+      operationId: onboarding_register_create
+      description: Register a new user. Returns user info and token.
+      tags:
+      - onboarding
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+        required: true
+      security:
+      - knoxApiToken: []
+      - {}
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+          description: ''
+  /api-v1/onboarding/set-experience/:
+    post:
+      operationId: onboarding_set_experience_create
+      description: Set experience and interests for current user profile.
+      tags:
+      - onboarding
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileExperienceRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ProfileExperienceRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ProfileExperienceRequest'
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Profile'
+          description: ''
+  /api-v1/onboarding/update-experience/:
+    patch:
+      operationId: onboarding_update_experience_partial_update
+      description: Update experience and/or interests for current user profile.
+      tags:
+      - onboarding
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedProfileExperienceRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedProfileExperienceRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedProfileExperienceRequest'
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Profile'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/onboarding/user-avatar/:
+    patch:
+      operationId: onboarding_user_avatar_partial_update
+      description: Set avatar for current user.
+      tags:
+      - onboarding
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedUserAvatarRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedUserAvatarRequest'
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/partnerships/:
+    get:
+      operationId: partnerships_list
+      parameters:
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - partnerships
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedPartnershipList'
+          description: ''
+    post:
+      operationId: partnerships_create
+      tags:
+      - partnerships
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Partnership'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Partnership'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Partnership'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Partnership'
+          description: ''
+  /api-v1/partnerships/{id}/:
+    get:
+      operationId: partnerships_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - partnerships
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Partnership'
+          description: ''
+    put:
+      operationId: partnerships_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - partnerships
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Partnership'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Partnership'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Partnership'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Partnership'
+          description: ''
+    patch:
+      operationId: partnerships_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - partnerships
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedPartnership'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedPartnership'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedPartnership'
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Partnership'
+          description: ''
+    delete:
+      operationId: partnerships_destroy
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - partnerships
+      security:
+      - knoxApiToken: []
+      responses:
+        '204':
+          description: No response body
+  /api-v1/stats/longest-streak/:
+    get:
+      operationId: stats_longest_streak_retrieve
+      description: 'Get the current user''s streak stats (longest + current consecutive-day
+        activity streak). A day counts as active if the user has ANY of: (1) a timer
+        session started, (2) evidence submitted, (3) a task completed, (4) a goal
+        created/updated, (5) a message sent, (6) a login. Day boundaries use the user''s
+        Profile.time_zone when available. Current streak is the consecutive-day streak
+        ending today (in the user''s timezone).'
+      tags:
+      - stats
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LongestStreakResponse'
+          description: ''
+  /api-v1/subtasks/:
+    get:
+      operationId: subtasks_list
+      parameters:
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - subtasks
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedSubTaskList'
+          description: ''
+    post:
+      operationId: subtasks_create
+      tags:
+      - subtasks
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubTask'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SubTask'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SubTask'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubTask'
+          description: ''
+  /api-v1/subtasks/{id}/:
+    get:
+      operationId: subtasks_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - subtasks
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubTask'
+          description: ''
+    put:
+      operationId: subtasks_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - subtasks
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubTask'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SubTask'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SubTask'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubTask'
+          description: ''
+    patch:
+      operationId: subtasks_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - subtasks
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedSubTask'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedSubTask'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedSubTask'
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubTask'
+          description: ''
+    delete:
+      operationId: subtasks_destroy
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - subtasks
+      security:
+      - knoxApiToken: []
+      responses:
+        '204':
+          description: No response body
+  /api-v1/tasks/:
+    get:
+      operationId: tasks_list
+      parameters:
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - tasks
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedTaskList'
+          description: ''
+    post:
+      operationId: tasks_create
+      tags:
+      - tasks
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Task'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Task'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Task'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+          description: ''
+  /api-v1/tasks/{id}/:
+    get:
+      operationId: tasks_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - tasks
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+          description: ''
+    put:
+      operationId: tasks_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - tasks
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Task'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Task'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Task'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+          description: ''
+    patch:
+      operationId: tasks_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - tasks
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedTask'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedTask'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedTask'
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+          description: ''
+    delete:
+      operationId: tasks_destroy
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - tasks
+      security:
+      - knoxApiToken: []
+      responses:
+        '204':
+          description: No response body
+  /api-v1/tasks/{id}/approve/:
+    post:
+      operationId: tasks_approve_create
+      description: Approve a task as partner.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - tasks
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Task'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Task'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Task'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/tasks/{id}/mark_not_completed/:
+    post:
+      operationId: tasks_mark_not_completed_create
+      description: Mark task as not completed.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - tasks
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Task'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Task'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Task'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+          description: ''
+  /api-v1/tasks/{id}/request_changes/:
+    post:
+      operationId: tasks_request_changes_create
+      description: Request changes for a task with optional comment.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - tasks
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskRequestChangesRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TaskRequestChangesRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/TaskRequestChangesRequest'
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/tasks/{id}/request_review/:
+    post:
+      operationId: tasks_request_review_create
+      description: Request review for a task.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - tasks
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Task'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Task'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Task'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/tasks/{id}/start_timer/:
+    post:
+      operationId: tasks_start_timer_create
+      description: Start a timer session for a task.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - tasks
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Task'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Task'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Task'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimerSession'
+          description: ''
+  /api-v1/tasks/{id}/stop_timer/:
+    post:
+      operationId: tasks_stop_timer_create
+      description: Stop the active timer session for a task.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - tasks
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Task'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Task'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Task'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimerSession'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/timer-sessions/:
+    get:
+      operationId: timer_sessions_list
+      parameters:
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - timer-sessions
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedTimerSessionList'
+          description: ''
+  /api-v1/timer-sessions/{id}/:
+    get:
+      operationId: timer_sessions_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - timer-sessions
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimerSession'
+          description: ''
+  /api-v1/waitlist/:
+    get:
+      operationId: waitlist_list
+      description: |-
+        Handle waitlist entries.
+
+        - Anyone can join the waitlist (unauthenticated POST).
+        - Only admins can list, retrieve, update or delete entries.
+      parameters:
+      - name: ordering
+        required: false
+        in: query
+        description: Which field to use when ordering the results.
+        schema:
+          type: string
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: search
+        required: false
+        in: query
+        description: A search term.
+        schema:
+          type: string
+      tags:
+      - waitlist
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedWaitlisterList'
+          description: ''
+    post:
+      operationId: waitlist_create
+      description: |-
+        Handle waitlist entries.
+
+        - Anyone can join the waitlist (unauthenticated POST).
+        - Only admins can list, retrieve, update or delete entries.
+      tags:
+      - waitlist
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Waitlister'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Waitlister'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Waitlister'
+        required: true
+      security:
+      - knoxApiToken: []
+      - {}
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Waitlister'
+          description: ''
+  /api-v1/waitlist/{id}/:
+    get:
+      operationId: waitlist_retrieve
+      description: |-
+        Handle waitlist entries.
+
+        - Anyone can join the waitlist (unauthenticated POST).
+        - Only admins can list, retrieve, update or delete entries.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this waitlister.
+        required: true
+      tags:
+      - waitlist
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Waitlister'
+          description: ''
+    put:
+      operationId: waitlist_update
+      description: |-
+        Handle waitlist entries.
+
+        - Anyone can join the waitlist (unauthenticated POST).
+        - Only admins can list, retrieve, update or delete entries.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this waitlister.
+        required: true
+      tags:
+      - waitlist
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Waitlister'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Waitlister'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Waitlister'
+        required: true
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Waitlister'
+          description: ''
+    patch:
+      operationId: waitlist_partial_update
+      description: |-
+        Handle waitlist entries.
+
+        - Anyone can join the waitlist (unauthenticated POST).
+        - Only admins can list, retrieve, update or delete entries.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this waitlister.
+        required: true
+      tags:
+      - waitlist
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedWaitlister'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedWaitlister'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedWaitlister'
+      security:
+      - knoxApiToken: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Waitlister'
+          description: ''
+    delete:
+      operationId: waitlist_destroy
+      description: |-
+        Handle waitlist entries.
+
+        - Anyone can join the waitlist (unauthenticated POST).
+        - Only admins can list, retrieve, update or delete entries.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this waitlister.
+        required: true
+      tags:
+      - waitlist
+      security:
+      - knoxApiToken: []
+      responses:
+        '204':
+          description: No response body
+  /api-v1/waitlist/download-waitlist/:
+    get:
+      operationId: waitlist_download_waitlist_retrieve
+      description: Download all waitlisters as CSV (no auth required, for testing).
+      tags:
+      - waitlist
+      security:
+      - knoxApiToken: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Waitlister'
+          description: ''
+  /api-v1/waitlist/join/:
+    post:
+      operationId: waitlist_join_create
+      description: Public endpoint to join the waitlist.
+      tags:
+      - waitlist
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Waitlister'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Waitlister'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Waitlister'
+        required: true
+      security:
+      - knoxApiToken: []
+      - {}
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Waitlister'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetailResponse'
+          description: ''
+  /api-v1/websockets/:
+    get:
+      operationId: websockets_retrieve
+      description: |
+        WebSocket channels (documentation-only).
+
+        All WebSockets require `wss://` in production and authenticate using a Knox token passed as a query param: `?token=<token>`.
+
+        ### Channels
+
+        #### 1) Conversations list
+        - URL: `wss://api.padlupp.com/ws/conversations/?token=<token>`
+        - Server -> Client (initial):
+          ```json
+          {"type":"conversations","conversations":[{...}]}
+          ```
+        - Server -> Client (updates):
+          ```json
+          {"type":"conversation_update","conversation":{...}}
+          ```
+
+        Conversation payload shape:
+        ```json
+        {
+          "id": 123,
+          "partnership": 456,
+          "goal": 789 | null,
+          "is_group": true | false,
+          "partner_name": "Alex",
+          "partner_avatar": "https://api.padlupp.com/assets/avatars/...jpg" | null,
+          "display_name": "Team Goal" | "Alex",
+          "member_ids": [1,2,3],
+          "member_names": ["Alex", "Sam"],
+          "last_message": { ...MessageSerializer... } | null,
+          "unread_count": 3,
+          "created_at": "2026-02-04T12:34:56Z",
+          "updated_at": "2026-02-04T12:40:00Z"
+        }
+        ```
+
+        Notes:
+        - Any `user.avatar` field returned by serializers is a full absolute URL (e.g. `https://api.padlupp.com/assets/avatars/...jpg`).
+
+        #### 2) Chat (per conversation)
+        - URL: `wss://api.padlupp.com/ws/chat/<conversation_id>/?token=<token>`
+
+        On connect the server sends history:
+        ```json
+          {"type":"history","messages":[{...}]}
+        ```
+
+        On connect the server also sends a presence snapshot:
+        ```json
+          {"type":"presence","online_user_ids":[1,2]}
+        ```
+
+        Presence snapshot also includes last seen timestamps by user id:
+        ```json
+          {"type":"presence","online_user_ids":[1,2],"last_seen_at_by_user_id":{"1":"2026-05-08T12:00:00Z"}}
+        ```
+
+        Client -> Server messages:
+        - Send message:
+          ```json
+          {"type":"message","text":"Hello"}
+          ```
+          - Optional reply: `reply_to_message_id`
+        - Send image/video file (base64):
+          ```json
+          {"type":"file","filename":"pic.jpg","content_type":"image/jpeg","data":"<base64>","text":"optional caption","reply_to_message_id":123}
+          ```
+        - Send image/video file (binary frame, 2-step):
+          1) Send metadata:
+          ```json
+          {"type":"file_meta","filename":"clip.mp4","content_type":"video/mp4","text":"optional caption","reply_to_message_id":123}
+          ```
+          2) Then send one binary websocket frame containing the raw file bytes.
+
+        - Typing:
+          ```json
+          {"type":"typing","is_typing":true}
+          ```
+        - Delivered ack (after receiving a message):
+          ```json
+          {"type":"delivered","message_id":123}
+          ```
+        - Read receipts (optional):
+          ```json
+          {"type":"read","message_ids":[1,2,3]}
+          ```
+          ```json
+          {"type":"read_all"}
+          ```
+
+        Server -> Client events (chat):
+        - New message: the serialized message dict (backward-compatible)
+        - Ack to sender: `{'type':'ack','ack':'received','message_id':<id>}`
+        - Typing: `{'type':'typing','user_id':<id>,'user_name':<str>,'is_typing':<bool>}`
+        - Presence: `{'type':'presence','online_user_ids':[...],'last_seen_at_by_user_id':{...}}`
+          - Note: `online_user_ids` is conversation-scoped (only participants of this conversation who are currently connected to this conversation's chat socket).
+          - `last_seen_at_by_user_id` maps participant ids to the latest known ISO timestamp.
+        - Delivered: `{'type':'delivered','message_id':<id>,'by_user_id':<id>}`
+        - Read: `{'type':'read','message_ids':[...],'by_user_id':<id>}`
+        - Read all: `{'type':'read_all','by_user_id':<id>}`
+      tags:
+      - websockets
+      security:
+      - knoxApiToken: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+components:
+  schemas:
+    ActionEnum:
+      enum:
+      - like
+      - pass
+      type: string
+      description: |-
+        * `like` - Like
+        * `pass` - Pass
+    BuddyConnect:
+      type: object
+      properties:
+        to_user:
+          type: integer
+        message:
+          type: string
+          maxLength: 2000
+      required:
+      - to_user
+    BuddyFinderProfile:
+      type: object
+      description: |-
+        Profile serializer used by buddy finder endpoint.
+
+        Adds a computed connection status from the current user to the profile's user.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        user:
+          allOf:
+          - $ref: '#/components/schemas/User'
+          readOnly: true
+        bio:
+          type: string
+        location:
+          type: string
+          maxLength: 255
+        experience:
+          type: string
+        interests:
+          type: array
+          items:
+            type: string
+        time_zone:
+          type: string
+          maxLength: 100
+        focus_areas: {}
+        availability: {}
+        communication_styles: {}
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+        compatibility_score:
+          type: integer
+          nullable: true
+          readOnly: true
+        rating:
+          type: number
+          format: double
+          nullable: true
+          readOnly: true
+        connection_status:
+          type: string
+          readOnly: true
+        buddy_request_id:
+          type: integer
+          nullable: true
+          readOnly: true
+      required:
+      - buddy_request_id
+      - compatibility_score
+      - connection_status
+      - created_at
+      - id
+      - rating
+      - updated_at
+      - user
+    BuddyProfileResponse:
+      type: object
+      properties:
+        user:
+          allOf:
+          - $ref: '#/components/schemas/User'
+          readOnly: true
+        profile:
+          allOf:
+          - $ref: '#/components/schemas/Profile'
+          readOnly: true
+      required:
+      - profile
+      - user
+    BuddyRequest:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        from_user:
+          allOf:
+          - $ref: '#/components/schemas/User'
+          readOnly: true
+        to_user:
+          allOf:
+          - $ref: '#/components/schemas/User'
+          readOnly: true
+        status:
+          allOf:
+          - $ref: '#/components/schemas/BuddyRequestStatusEnum'
+          readOnly: true
+        message:
+          type: string
+          readOnly: true
+        responded_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - from_user
+      - id
+      - message
+      - responded_at
+      - status
+      - to_user
+      - updated_at
+    BuddyRequestActionResponse:
+      type: object
+      description: |-
+        Generic response for buddy request actions (accept/reject).
+
+        - `detail`: human-readable status message.
+        - `partnership_id`: present only for the accept action.
+      properties:
+        detail:
+          type: string
+        partnership_id:
+          type: integer
+      required:
+      - detail
+    BuddyRequestStatusEnum:
+      enum:
+      - pending
+      - accepted
+      - rejected
+      type: string
+      description: |-
+        * `pending` - Pending
+        * `accepted` - Accepted
+        * `rejected` - Rejected
+    CheckinFrequencyEnum:
+      enum:
+      - DAILY
+      - 3-DAYS
+      - WEEKLY
+      - BI-WEEKLY
+      - MONDAYS
+      - TUESDAYS
+      - WEDNESDAYS
+      - THURSDAYS
+      - FRIDAYS
+      - SATURDAYS
+      - SUNDAYS
+      type: string
+      description: |-
+        * `DAILY` - Daily
+        * `3-DAYS` - Every 3 Days
+        * `WEEKLY` - Weekly
+        * `BI-WEEKLY` - Bi-Weekly
+        * `MONDAYS` - Mondays
+        * `TUESDAYS` - Tuesdays
+        * `WEDNESDAYS` - Wednesdays
+        * `THURSDAYS` - Thursdays
+        * `FRIDAYS` - Fridays
+        * `SATURDAYS` - Saturdays
+        * `SUNDAYS` - Sundays
+    Conversation:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        partnership:
+          type: integer
+          nullable: true
+        goal:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          readOnly: true
+        is_group:
+          type: boolean
+          readOnly: true
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/User'
+          readOnly: true
+        last_message:
+          allOf:
+          - $ref: '#/components/schemas/Message'
+          readOnly: true
+        unread_count:
+          type: integer
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - goal
+      - id
+      - is_group
+      - last_message
+      - members
+      - name
+      - unread_count
+      - updated_at
+    ConversationMedia:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        file:
+          type: string
+          format: uri
+          nullable: true
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        sender_id:
+          type: integer
+          readOnly: true
+        sender_name:
+          type: string
+          readOnly: true
+      required:
+      - created_at
+      - file
+      - id
+      - sender_id
+      - sender_name
+    ConversationRenameRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 255
+      required:
+      - name
+    DeleteAccountRequest:
+      type: object
+      description: Request body for account deletion requests.
+      properties:
+        reason:
+          type: string
+          maxLength: 2000
+      required:
+      - reason
+    DetailResponse:
+      type: object
+      description: Simple detail message wrapper used for error/success responses.
+      properties:
+        detail:
+          type: string
+      required:
+      - detail
+    Eventx:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        start_date:
+          type: string
+          format: date
+        start_time:
+          type: string
+          format: time
+        end_date:
+          type: string
+          format: date
+        end_time:
+          type: string
+          format: time
+        banner:
+          type: string
+          format: uri
+          nullable: true
+        event_link:
+          type: string
+          format: uri
+          maxLength: 200
+        reminder_sent:
+          type: boolean
+          readOnly: true
+        creator:
+          allOf:
+          - $ref: '#/components/schemas/User'
+          readOnly: true
+        participants:
+          type: array
+          items:
+            $ref: '#/components/schemas/User'
+          readOnly: true
+        participants_ids:
+          type: array
+          items:
+            type: integer
+            writeOnly: true
+          writeOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - creator
+      - end_date
+      - end_time
+      - id
+      - participants
+      - reminder_sent
+      - start_date
+      - start_time
+      - title
+      - updated_at
+    Evidence:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        task:
+          type: integer
+        subtask:
+          type: integer
+          nullable: true
+        submitted_by:
+          type: integer
+          readOnly: true
+        text:
+          type: string
+        files:
+          type: string
+          format: uri
+          nullable: true
+        links:
+          type: string
+          format: uri
+          nullable: true
+          maxLength: 200
+        submitted_at:
+          type: string
+          format: date-time
+          readOnly: true
+        reviewed_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        approved:
+          type: boolean
+          nullable: true
+        reviewer:
+          type: integer
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - id
+      - reviewed_at
+      - submitted_at
+      - submitted_by
+      - task
+      - updated_at
+    ForgotPasswordRequestOtp:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+      required:
+      - email
+    ForgotPasswordResetPassword:
+      type: object
+      properties:
+        reset_token:
+          type: string
+        new_password:
+          type: string
+          maxLength: 128
+          minLength: 6
+        confirm_password:
+          type: string
+          maxLength: 128
+          minLength: 6
+      required:
+      - confirm_password
+      - new_password
+      - reset_token
+    ForgotPasswordVerifyOtp:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        otp:
+          type: string
+          maxLength: 12
+          minLength: 4
+      required:
+      - email
+      - otp
+    ForgotPasswordVerifyOtpResponse:
+      type: object
+      properties:
+        detail:
+          type: string
+        reset_token:
+          type: string
+      required:
+      - detail
+      - reset_token
+    Goal:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        user:
+          allOf:
+          - $ref: '#/components/schemas/User'
+          readOnly: true
+        partnership:
+          type: string
+          readOnly: true
+        conversation:
+          type: integer
+          writeOnly: true
+          nullable: true
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/User'
+          readOnly: true
+        member_count:
+          type: string
+          readOnly: true
+        title:
+          type: string
+          maxLength: 255
+        category:
+          type: string
+          maxLength: 100
+        importance:
+          type: string
+          maxLength: 20
+        checkin_frequency:
+          $ref: '#/components/schemas/CheckinFrequencyEnum'
+        is_public:
+          type: boolean
+        is_shared:
+          type: boolean
+          readOnly: true
+        shared_id:
+          type: string
+          format: uuid
+          readOnly: true
+          nullable: true
+        invite_link:
+          type: string
+          format: uri
+          readOnly: true
+          nullable: true
+        description:
+          type: string
+        start_date:
+          type: string
+          format: date
+          nullable: true
+        start_time:
+          type: string
+          format: time
+          nullable: true
+        target_date:
+          type: string
+          format: date
+          nullable: true
+        is_active:
+          type: boolean
+        status:
+          type: string
+          maxLength: 20
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - id
+      - invite_link
+      - is_shared
+      - member_count
+      - members
+      - partnership
+      - shared_id
+      - title
+      - updated_at
+      - user
+    GoalJoinRequest:
+      type: object
+      properties:
+        shared_id:
+          type: string
+          format: uuid
+      required:
+      - shared_id
+    GoalJoinResponse:
+      type: object
+      properties:
+        detail:
+          type: string
+        goal_id:
+          type: integer
+        direct_link:
+          type: string
+          format: uri
+      required:
+      - detail
+      - direct_link
+      - goal_id
+    GoalShareRequest:
+      type: object
+      properties:
+        emails:
+          type: array
+          items:
+            type: string
+            format: email
+        message:
+          type: string
+          maxLength: 4000
+      required:
+      - emails
+    GoalShareResponse:
+      type: object
+      properties:
+        detail:
+          type: string
+        goal_id:
+          type: integer
+        direct_link:
+          type: string
+          format: uri
+        added_user_ids:
+          type: array
+          items:
+            type: integer
+        invited_emails:
+          type: array
+          items:
+            type: string
+            format: email
+      required:
+      - added_user_ids
+      - detail
+      - direct_link
+      - goal_id
+      - invited_emails
+    GoogleAuthRequest:
+      type: object
+      description: |-
+        Request body for Google sign-in/sign-up.
+
+        Clients should send a Google `id_token` obtained via Google Sign-In.
+      properties:
+        id_token:
+          type: string
+        name:
+          type: string
+        phone:
+          type: string
+      required:
+      - id_token
+    GoogleAuthResponse:
+      type: object
+      properties:
+        user:
+          allOf:
+          - $ref: '#/components/schemas/User'
+          readOnly: true
+        token:
+          type: string
+      required:
+      - token
+      - user
+    InviteUserRequest:
+      type: object
+      description: Request body for inviting a user by email.
+      properties:
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+          maxLength: 255
+      required:
+      - email
+    InviteUserResponse:
+      type: object
+      properties:
+        detail:
+          type: string
+        waitlisted:
+          type: boolean
+      required:
+      - detail
+      - waitlisted
+    LoginRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+      required:
+      - email
+      - password
+    LoginResponse:
+      type: object
+      properties:
+        user:
+          allOf:
+          - $ref: '#/components/schemas/User'
+          readOnly: true
+        token:
+          type: string
+      required:
+      - token
+      - user
+    LogoutResponse:
+      type: object
+      properties:
+        detail:
+          type: string
+      required:
+      - detail
+    LongestStreakResponse:
+      type: object
+      properties:
+        longest_streak_count:
+          type: integer
+        current_streak_count:
+          type: integer
+      required:
+      - current_streak_count
+      - longest_streak_count
+    Match:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        from_user:
+          type: integer
+          readOnly: true
+        to_user:
+          type: integer
+        action:
+          $ref: '#/components/schemas/ActionEnum'
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - action
+      - created_at
+      - from_user
+      - id
+      - to_user
+      - updated_at
+    Message:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        conversation:
+          type: integer
+        sender:
+          allOf:
+          - $ref: '#/components/schemas/User'
+          readOnly: true
+        text:
+          type: string
+        is_a_reply:
+          type: boolean
+          readOnly: true
+        reply_to:
+          allOf:
+          - $ref: '#/components/schemas/MessageReply'
+          readOnly: true
+        reply_to_message_id:
+          type: integer
+          writeOnly: true
+          nullable: true
+        attachment:
+          type: string
+          format: uri
+          readOnly: true
+          nullable: true
+        attachment_name:
+          type: string
+          readOnly: true
+        attachment_mime:
+          type: string
+          readOnly: true
+        attachment_size:
+          type: integer
+          readOnly: true
+          nullable: true
+        is_read:
+          type: boolean
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - attachment
+      - attachment_mime
+      - attachment_name
+      - attachment_size
+      - conversation
+      - created_at
+      - id
+      - is_a_reply
+      - is_read
+      - reply_to
+      - sender
+      - updated_at
+    MessageReply:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        sender:
+          allOf:
+          - $ref: '#/components/schemas/User'
+          readOnly: true
+        text:
+          type: string
+          readOnly: true
+        attachment:
+          type: string
+          format: uri
+          readOnly: true
+          nullable: true
+        attachment_name:
+          type: string
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - attachment
+      - attachment_name
+      - created_at
+      - id
+      - sender
+      - text
+    Notification:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        user:
+          type: integer
+          readOnly: true
+        type:
+          type: string
+          maxLength: 50
+        payload: {}
+        is_read:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - id
+      - type
+      - updated_at
+      - user
+    NotificationMarkAllReadResponse:
+      type: object
+      description: Response body for mark_all_read endpoint.
+      properties:
+        marked_read:
+          type: integer
+      required:
+      - marked_read
+    PaginatedConversationList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Conversation'
+    PaginatedConversationMediaList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConversationMedia'
+    PaginatedEventxList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Eventx'
+    PaginatedEvidenceList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Evidence'
+    PaginatedGoalList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Goal'
+    PaginatedMatchList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Match'
+    PaginatedMessageList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+    PaginatedNotificationList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Notification'
+    PaginatedPartnershipList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Partnership'
+    PaginatedProfileList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Profile'
+    PaginatedSubTaskList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubTask'
+    PaginatedTaskList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+    PaginatedTimerSessionList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/TimerSession'
+    PaginatedWaitlisterList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Waitlister'
+    Partnership:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        user_a:
+          type: integer
+        user_b:
+          type: integer
+        is_active:
+          type: boolean
+        paused:
+          type: boolean
+        focus_goals:
+          type: array
+          items:
+            type: integer
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - id
+      - updated_at
+      - user_a
+      - user_b
+    PatchedEventx:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        start_date:
+          type: string
+          format: date
+        start_time:
+          type: string
+          format: time
+        end_date:
+          type: string
+          format: date
+        end_time:
+          type: string
+          format: time
+        banner:
+          type: string
+          format: uri
+          nullable: true
+        event_link:
+          type: string
+          format: uri
+          maxLength: 200
+        reminder_sent:
+          type: boolean
+          readOnly: true
+        creator:
+          allOf:
+          - $ref: '#/components/schemas/User'
+          readOnly: true
+        participants:
+          type: array
+          items:
+            $ref: '#/components/schemas/User'
+          readOnly: true
+        participants_ids:
+          type: array
+          items:
+            type: integer
+            writeOnly: true
+          writeOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+    PatchedEvidence:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        task:
+          type: integer
+        subtask:
+          type: integer
+          nullable: true
+        submitted_by:
+          type: integer
+          readOnly: true
+        text:
+          type: string
+        files:
+          type: string
+          format: uri
+          nullable: true
+        links:
+          type: string
+          format: uri
+          nullable: true
+          maxLength: 200
+        submitted_at:
+          type: string
+          format: date-time
+          readOnly: true
+        reviewed_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        approved:
+          type: boolean
+          nullable: true
+        reviewer:
+          type: integer
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+    PatchedGoal:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        user:
+          allOf:
+          - $ref: '#/components/schemas/User'
+          readOnly: true
+        partnership:
+          type: string
+          readOnly: true
+        conversation:
+          type: integer
+          writeOnly: true
+          nullable: true
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/User'
+          readOnly: true
+        member_count:
+          type: string
+          readOnly: true
+        title:
+          type: string
+          maxLength: 255
+        category:
+          type: string
+          maxLength: 100
+        importance:
+          type: string
+          maxLength: 20
+        checkin_frequency:
+          $ref: '#/components/schemas/CheckinFrequencyEnum'
+        is_public:
+          type: boolean
+        is_shared:
+          type: boolean
+          readOnly: true
+        shared_id:
+          type: string
+          format: uuid
+          readOnly: true
+          nullable: true
+        invite_link:
+          type: string
+          format: uri
+          readOnly: true
+          nullable: true
+        description:
+          type: string
+        start_date:
+          type: string
+          format: date
+          nullable: true
+        start_time:
+          type: string
+          format: time
+          nullable: true
+        target_date:
+          type: string
+          format: date
+          nullable: true
+        is_active:
+          type: boolean
+        status:
+          type: string
+          maxLength: 20
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+    PatchedMatch:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        from_user:
+          type: integer
+          readOnly: true
+        to_user:
+          type: integer
+        action:
+          $ref: '#/components/schemas/ActionEnum'
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+    PatchedMessage:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        conversation:
+          type: integer
+        sender:
+          allOf:
+          - $ref: '#/components/schemas/User'
+          readOnly: true
+        text:
+          type: string
+        is_a_reply:
+          type: boolean
+          readOnly: true
+        reply_to:
+          allOf:
+          - $ref: '#/components/schemas/MessageReply'
+          readOnly: true
+        reply_to_message_id:
+          type: integer
+          writeOnly: true
+          nullable: true
+        attachment:
+          type: string
+          format: uri
+          readOnly: true
+          nullable: true
+        attachment_name:
+          type: string
+          readOnly: true
+        attachment_mime:
+          type: string
+          readOnly: true
+        attachment_size:
+          type: integer
+          readOnly: true
+          nullable: true
+        is_read:
+          type: boolean
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+    PatchedNotification:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        user:
+          type: integer
+          readOnly: true
+        type:
+          type: string
+          maxLength: 50
+        payload: {}
+        is_read:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+    PatchedPartnership:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        user_a:
+          type: integer
+        user_b:
+          type: integer
+        is_active:
+          type: boolean
+        paused:
+          type: boolean
+        focus_goals:
+          type: array
+          items:
+            type: integer
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+    PatchedProfile:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        user:
+          allOf:
+          - $ref: '#/components/schemas/User'
+          readOnly: true
+        bio:
+          type: string
+        location:
+          type: string
+          maxLength: 255
+        experience:
+          type: string
+        interests:
+          type: array
+          items:
+            type: string
+        time_zone:
+          type: string
+          maxLength: 100
+        focus_areas: {}
+        availability: {}
+        communication_styles: {}
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+        compatibility_score:
+          type: integer
+          nullable: true
+          readOnly: true
+        rating:
+          type: number
+          format: double
+          nullable: true
+          readOnly: true
+    PatchedProfileExperienceRequest:
+      type: object
+      description: Request body for updating profile experience and interests.
+      properties:
+        experience:
+          type: string
+        interests:
+          type: array
+          items:
+            type: string
+    PatchedSubTask:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        task:
+          type: integer
+        owner:
+          type: integer
+          nullable: true
+        title:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        status:
+          $ref: '#/components/schemas/Status341Enum'
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+    PatchedTask:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        goal:
+          type: integer
+        partnership:
+          type: integer
+          nullable: true
+        owner:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          maxLength: 255
+        completed:
+          type: boolean
+        description:
+          type: string
+        due_at:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          $ref: '#/components/schemas/Status341Enum'
+        is_shared:
+          type: boolean
+        is_overdue:
+          type: boolean
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+    PatchedUserAvatarRequest:
+      type: object
+      description: Request body for updating the user's avatar.
+      properties:
+        avatar:
+          type: string
+          format: uri
+    PatchedUserUpdateRequest:
+      type: object
+      description: Request body for updating the current user (partial).
+      properties:
+        name:
+          type: string
+        phone:
+          type: string
+        preferred_notification_email:
+          type: string
+          format: email
+        preferred_notification_phone:
+          type: string
+    PatchedWaitlister:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        name:
+          type: string
+          maxLength: 255
+        age:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: -9223372036854775808
+          format: int64
+          nullable: true
+        sex:
+          type: string
+          maxLength: 10
+        country:
+          type: string
+          maxLength: 100
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+    Profile:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        user:
+          allOf:
+          - $ref: '#/components/schemas/User'
+          readOnly: true
+        bio:
+          type: string
+        location:
+          type: string
+          maxLength: 255
+        experience:
+          type: string
+        interests:
+          type: array
+          items:
+            type: string
+        time_zone:
+          type: string
+          maxLength: 100
+        focus_areas: {}
+        availability: {}
+        communication_styles: {}
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+        compatibility_score:
+          type: integer
+          nullable: true
+          readOnly: true
+        rating:
+          type: number
+          format: double
+          nullable: true
+          readOnly: true
+      required:
+      - compatibility_score
+      - created_at
+      - id
+      - rating
+      - updated_at
+      - user
+    ProfileExperienceRequest:
+      type: object
+      description: Request body for updating profile experience and interests.
+      properties:
+        experience:
+          type: string
+        interests:
+          type: array
+          items:
+            type: string
+    RegisterRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+        name:
+          type: string
+        phone:
+          type: string
+      required:
+      - email
+      - name
+      - password
+    RegisterResponse:
+      type: object
+      properties:
+        user:
+          allOf:
+          - $ref: '#/components/schemas/User'
+          readOnly: true
+        token:
+          type: string
+      required:
+      - token
+      - user
+    Status341Enum:
+      enum:
+      - planned
+      - in_progress
+      - pending_review
+      - completed
+      - needs_revision
+      - not_completed
+      type: string
+      description: |-
+        * `planned` - Planned
+        * `in_progress` - In progress
+        * `pending_review` - Pending partner review
+        * `completed` - Completed
+        * `needs_revision` - Needs revision
+        * `not_completed` - Not completed
+    SubTask:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        task:
+          type: integer
+        owner:
+          type: integer
+          nullable: true
+        title:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        status:
+          $ref: '#/components/schemas/Status341Enum'
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - id
+      - task
+      - title
+      - updated_at
+    Task:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        goal:
+          type: integer
+        partnership:
+          type: integer
+          nullable: true
+        owner:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          maxLength: 255
+        completed:
+          type: boolean
+        description:
+          type: string
+        due_at:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          $ref: '#/components/schemas/Status341Enum'
+        is_shared:
+          type: boolean
+        is_overdue:
+          type: boolean
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - goal
+      - id
+      - is_overdue
+      - owner
+      - title
+      - updated_at
+    TaskRequestChangesRequest:
+      type: object
+      description: Request body for task changes request comment.
+      properties:
+        comment:
+          type: string
+    TimerSession:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        task:
+          type: integer
+          nullable: true
+        subtask:
+          type: integer
+          nullable: true
+        user:
+          type: integer
+          readOnly: true
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+        notes:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - id
+      - started_at
+      - updated_at
+      - user
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        email:
+          type: string
+          format: email
+          maxLength: 50
+        phone:
+          type: string
+          nullable: true
+          maxLength: 15
+        name:
+          type: string
+          maxLength: 255
+        avatar:
+          type: string
+          readOnly: true
+        phone_verified:
+          type: boolean
+        email_verified:
+          type: boolean
+        preferred_notification_email:
+          type: string
+          format: email
+          nullable: true
+          maxLength: 50
+        preferred_notification_phone:
+          type: string
+          nullable: true
+          maxLength: 15
+      required:
+      - avatar
+      - email
+      - id
+      - name
+    Waitlister:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        name:
+          type: string
+          maxLength: 255
+        age:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: -9223372036854775808
+          format: int64
+          nullable: true
+        sex:
+          type: string
+          maxLength: 10
+        country:
+          type: string
+          maxLength: 100
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - email
+      - id
+      - updated_at
+  securitySchemes:
+    knoxApiToken:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: Token-based authentication with required prefix "Token"
