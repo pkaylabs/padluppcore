@@ -57,6 +57,7 @@ from .serializers import (
 	UserSerializer,
 	WaitlisterSerializer,
 	LongestStreakResponseSerializer,
+	ConversationRenameRequestSerializer,
 )
 from .serializers import (
 	GoogleAuthRequestSerializer,
@@ -1716,6 +1717,25 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
 		)
 		return Response(ConversationMediaSerializer(qs, many=True, context={'request': request}).data)
 
+	@extend_schema(
+		request=ConversationRenameRequestSerializer,
+		responses={200: ConversationSerializer, 400: DetailResponseSerializer, 403: DetailResponseSerializer},
+		description='Rename a group conversation.'
+	)
+	@action(detail=True, methods=['post'], url_path='rename-group')
+	def rename_group(self, request, pk=None):
+		conversation = self.get_object()
+		if not conversation.is_group:
+			return Response({'detail': 'Only group conversations can be renamed.'}, status=status.HTTP_400_BAD_REQUEST)
+		if not _user_is_member_of_conversation(request.user.id, conversation):
+			return Response({'detail': 'You are not part of this conversation.'}, status=status.HTTP_403_FORBIDDEN)
+
+		serializer = ConversationRenameRequestSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		conversation.name = serializer.validated_data['name'].strip()
+		conversation.save(update_fields=['name', 'updated_at'])
+		return Response(ConversationSerializer(conversation, context={'request': request}).data, status=status.HTTP_200_OK)
+
 
 class MessageViewSet(viewsets.ModelViewSet):
 	serializer_class = MessageSerializer
@@ -1775,7 +1795,8 @@ class MessageViewSet(viewsets.ModelViewSet):
 				'partnership': conv.partnership_id,
 				'goal': conv.goal_id,
 				'is_group': conv.is_group,
-				'display_name': conv.goal.title if conv.goal_id and conv.is_group else None,
+				'display_name': (conv.name or conv.goal.title) if conv.is_group else None,
+				'name': conv.name,
 				'member_ids': user_ids,
 				'member_names': member_names,
 				'last_message': last_message_payload,
