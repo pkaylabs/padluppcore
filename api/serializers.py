@@ -13,6 +13,7 @@ from accounts.models import User
 from .models import (
 	Profile,
 	Goal,
+	GoalMembership,
 	Partnership,
 	Event,
 	BuddyRequest,
@@ -23,6 +24,7 @@ from .models import (
 	Evidence,
 	Notification,
 	Conversation,
+	ConversationMembership,
 	Message,
 	Waitlister,
 )
@@ -227,7 +229,9 @@ class LongestStreakResponseSerializer(serializers.Serializer):
 class GoalSerializer(serializers.ModelSerializer):
 	user = UserSerializer(read_only=True)
 	partnership = serializers.SerializerMethodField(read_only=True)
+	members = UserSerializer(many=True, read_only=True)
 	conversation = serializers.PrimaryKeyRelatedField(queryset=Conversation.objects.all(), required=False, allow_null=True, write_only=True)
+	member_count = serializers.SerializerMethodField()
 
 	class Meta:
 		model = Goal
@@ -236,10 +240,16 @@ class GoalSerializer(serializers.ModelSerializer):
 			'user',
 			'partnership',
 			'conversation',
+			'members',
+			'member_count',
 			'title',
 			'category',
 			'importance',
 			'checkin_frequency',
+			'is_public',
+			'is_shared',
+			'shared_id',
+			'invite_link',
 			'description',
 			'start_date',
 			'start_time',
@@ -249,10 +259,41 @@ class GoalSerializer(serializers.ModelSerializer):
 			'created_at',
 			'updated_at',
 		]
-		read_only_fields = ['user', 'partnership']
+		read_only_fields = ['user', 'partnership', 'members', 'member_count', 'is_shared', 'shared_id', 'invite_link']
 
 	def get_partnership(self, obj):
 		return obj.partnership_id if obj.partnership_id else None
+
+	def get_member_count(self, obj):
+		return obj.members.count() if hasattr(obj, 'members') else 0
+
+
+class GoalJoinRequestSerializer(serializers.Serializer):
+	shared_id = serializers.UUIDField()
+
+
+class GoalJoinResponseSerializer(serializers.Serializer):
+	detail = serializers.CharField()
+	goal_id = serializers.IntegerField()
+	direct_link = serializers.URLField()
+
+
+class GoalShareRequestSerializer(serializers.Serializer):
+	emails = serializers.ListField(child=serializers.EmailField(), allow_empty=False)
+	message = serializers.CharField(required=False, allow_blank=True, max_length=4000)
+
+
+class GoalShareResponseSerializer(serializers.Serializer):
+	detail = serializers.CharField()
+	goal_id = serializers.IntegerField()
+	direct_link = serializers.URLField()
+	added_user_ids = serializers.ListField(child=serializers.IntegerField())
+	invited_emails = serializers.ListField(child=serializers.EmailField())
+
+
+class BuddyProfileResponseSerializer(serializers.Serializer):
+	user = UserSerializer(read_only=True)
+	profile = ProfileSerializer(read_only=True)
 
 
 class PartnershipSerializer(serializers.ModelSerializer):
@@ -375,6 +416,14 @@ class NotificationSerializer(serializers.ModelSerializer):
 
 class MessageSerializer(serializers.ModelSerializer):
 	sender = UserSerializer(read_only=True)
+	reply_to = serializers.SerializerMethodField()
+	reply_to_message_id = serializers.PrimaryKeyRelatedField(
+		queryset=Message.objects.all(),
+		required=False,
+		allow_null=True,
+		write_only=True,
+		source='reply_to_message',
+	)
 
 	class Meta:
 		model = Message
@@ -383,6 +432,9 @@ class MessageSerializer(serializers.ModelSerializer):
 			'conversation',
 			'sender',
 			'text',
+			'is_a_reply',
+			'reply_to',
+			'reply_to_message_id',
 			'attachment',
 			'attachment_name',
 			'attachment_mime',
@@ -391,18 +443,89 @@ class MessageSerializer(serializers.ModelSerializer):
 			'created_at',
 			'updated_at',
 		]
-		read_only_fields = ['sender', 'is_read', 'attachment', 'attachment_name', 'attachment_mime', 'attachment_size']
+		read_only_fields = ['sender', 'is_read', 'attachment', 'attachment_name', 'attachment_mime', 'attachment_size', 'is_a_reply', 'reply_to']
+
+	@extend_schema_field(serializers.Serializer)
+	def get_reply_to(self, obj):
+		reply = getattr(obj, 'reply_to_message', None)
+		if not reply:
+			return None
+		return MessageReplySerializer(reply, context=self.context).data
+
+	def create(self, validated_data):
+		reply_to = validated_data.get('reply_to_message')
+		validated_data['is_a_reply'] = bool(reply_to)
+		return super().create(validated_data)
+
+	def validate(self, attrs):
+		reply_to = attrs.get('reply_to_message')
+		conversation = attrs.get('conversation')
+		if reply_to and conversation and reply_to.conversation_id != conversation.id:
+			raise serializers.ValidationError({'reply_to_message_id': 'Reply message must belong to the same conversation.'})
+		return attrs
+
+
+class MessageReplySerializer(serializers.ModelSerializer):
+	sender = UserSerializer(read_only=True)
+
+	class Meta:
+		model = Message
+		fields = ['id', 'sender', 'text', 'attachment', 'attachment_name', 'created_at']
+		read_only_fields = fields
+
+
+class ConversationMemberSerializer(serializers.ModelSerializer):
+	user = UserSerializer(read_only=True)
+
+	class Meta:
+		model = ConversationMembership
+		fields = ['id', 'user', 'created_at']
+		read_only_fields = fields
+
+
+class ConversationMediaSerializer(serializers.ModelSerializer):
+	file = serializers.SerializerMethodField()
+	sender_id = serializers.IntegerField(read_only=True)
+	sender_name = serializers.CharField(source='sender.name', read_only=True)
+
+	class Meta:
+		model = Message
+		fields = ['id', 'file', 'created_at', 'sender_id', 'sender_name']
+		read_only_fields = fields
+
+	@extend_schema_field(serializers.URLField(allow_null=True))
+	def get_file(self, obj):
+		attachment = getattr(obj, 'attachment', None)
+		if not attachment:
+			return None
+		try:
+			url = attachment.url
+		except Exception:
+			return None
+		request = self.context.get('request')
+		if request is not None:
+			return request.build_absolute_uri(url)
+		base_url = getattr(settings, 'PUBLIC_BASE_URL', '') or getattr(settings, 'SITE_URL', '')
+		if base_url:
+			return urljoin(base_url.rstrip('/') + '/', url.lstrip('/'))
+		return url
 
 
 class ConversationSerializer(serializers.ModelSerializer):
 	last_message = serializers.SerializerMethodField()
 	unread_count = serializers.SerializerMethodField()
+	goal = serializers.PrimaryKeyRelatedField(read_only=True)
+	is_group = serializers.BooleanField(read_only=True)
+	members = UserSerializer(many=True, read_only=True)
 
 	class Meta:
 		model = Conversation
 		fields = [
 			'id',
 			'partnership',
+			'goal',
+			'is_group',
+			'members',
 			'last_message',
 			'unread_count',
 			'created_at',
