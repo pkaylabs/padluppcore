@@ -414,6 +414,15 @@ class NotificationSerializer(serializers.ModelSerializer):
 		read_only_fields = ['user']
 
 
+class MessageReplySerializer(serializers.ModelSerializer):
+	sender = UserSerializer(read_only=True)
+
+	class Meta:
+		model = Message
+		fields = ['id', 'sender', 'text', 'attachment', 'attachment_name', 'created_at']
+		read_only_fields = fields
+
+
 class MessageSerializer(serializers.ModelSerializer):
 	sender = UserSerializer(read_only=True)
 	reply_to = serializers.SerializerMethodField()
@@ -445,7 +454,7 @@ class MessageSerializer(serializers.ModelSerializer):
 		]
 		read_only_fields = ['sender', 'is_read', 'attachment', 'attachment_name', 'attachment_mime', 'attachment_size', 'is_a_reply', 'reply_to']
 
-	@extend_schema_field(serializers.Serializer)
+	@extend_schema_field(MessageReplySerializer)
 	def get_reply_to(self, obj):
 		reply = getattr(obj, 'reply_to_message', None)
 		if not reply:
@@ -463,15 +472,6 @@ class MessageSerializer(serializers.ModelSerializer):
 		if reply_to and conversation and reply_to.conversation_id != conversation.id:
 			raise serializers.ValidationError({'reply_to_message_id': 'Reply message must belong to the same conversation.'})
 		return attrs
-
-
-class MessageReplySerializer(serializers.ModelSerializer):
-	sender = UserSerializer(read_only=True)
-
-	class Meta:
-		model = Message
-		fields = ['id', 'sender', 'text', 'attachment', 'attachment_name', 'created_at']
-		read_only_fields = fields
 
 
 class ConversationMemberSerializer(serializers.ModelSerializer):
