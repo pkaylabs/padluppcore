@@ -807,6 +807,18 @@ class GoalSharingEndpointsTests(APITestCase):
 		self.assertTrue(Waitlister.objects.filter(email='new-person@example.com').exists())
 		self.assertGreaterEqual(mock_send_mailgun_email.call_count, 2)
 
+	def test_goal_detail_does_not_error_with_multiple_members(self):
+		goal = Goal.objects.create(user=self.owner, title='Detail goal')
+		# Create multiple membership rows so the underlying ORM join would
+		# produce duplicate Goal rows without a distinct() queryset.
+		goal.members.add(self.owner, self.member, self.stranger)
+
+		self.client.force_authenticate(user=self.owner)
+		url = reverse('goals-detail', kwargs={'pk': goal.id})
+		resp = self.client.get(url)
+		self.assertEqual(resp.status_code, status.HTTP_200_OK)
+		self.assertEqual(resp.data['id'], goal.id)
+
 	def test_group_conversation_can_be_renamed_by_member(self):
 		goal = Goal.objects.create(user=self.owner, title='Renameable goal', is_public=True)
 		join_url = reverse('goals-join-goal')
