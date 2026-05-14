@@ -7,8 +7,10 @@ from padluppcore.utils.constants import StatusEnum
 from padluppcore.utils.models import TimeStampedModel
 
 
-def build_goal_invite_link(shared_id) -> str:
+def build_goal_invite_link(shared_id, goal_id: int = None) -> str:
 	base_url = (getattr(settings, 'PADLUPP_APP_URL', '') or 'https://app.padlupp.com').rstrip('/')
+	if goal_id is not None:
+		return f'{base_url}/goals/?shared_id={shared_id}&goal_id={goal_id}'
 	return f'{base_url}/goals/?shared_id={shared_id}'
 
 
@@ -77,7 +79,7 @@ class Goal(TimeStampedModel):
 			if not self.shared_id:
 				self.shared_id = uuid.uuid4()
 			if not self.invite_link and self.shared_id:
-				self.invite_link = build_goal_invite_link(self.shared_id)
+				self.invite_link = build_goal_invite_link(self.shared_id, goal_id=self.id)
 		super().save(*args, **kwargs)
 
 
