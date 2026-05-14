@@ -1217,12 +1217,16 @@ class GoalViewSet(viewsets.ModelViewSet):
 	def get_queryset(self):
 		user = self.request.user
 		# Get goals the user owns, participates in, or has joined as a member.
-		return Goal.objects.filter(
+		return (
+			Goal.objects.filter(
 			models.Q(user=user) |
 			models.Q(members=user) |
 			models.Q(partnership__user_a=user) |
 			models.Q(partnership__user_b=user)
-		).order_by('-created_at')
+			)
+			.distinct()
+			.order_by('-created_at')
+		)
 
 
 	def perform_create(self, serializer):
@@ -1693,17 +1697,22 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
 		user = self.request.user
 		if not getattr(user, 'is_authenticated', False):
 			return Conversation.objects.none()
-		return Conversation.objects.filter(
-			models.Q(members=user) |
-			models.Q(partnership__user_a=user) |
-			models.Q(partnership__user_b=user) |
-			models.Q(goal__members=user)
-		).annotate(
+		return (
+			Conversation.objects.filter(
+				models.Q(members=user) |
+				models.Q(partnership__user_a=user) |
+				models.Q(partnership__user_b=user) |
+				models.Q(goal__members=user)
+			)
+			.distinct()
+			.annotate(
 			unread_count=models.Count(
 				'messages',
 				filter=models.Q(messages__is_read=False) & ~models.Q(messages__sender=user),
 			)
-		).order_by('-created_at')
+			)
+			.order_by('-created_at')
+		)
 
 	@extend_schema(
 		responses={200: ConversationMediaSerializer(many=True)},
@@ -1745,12 +1754,16 @@ class MessageViewSet(viewsets.ModelViewSet):
 
 	def get_queryset(self):
 		user = self.request.user
-		qs = Message.objects.filter(
-			models.Q(conversation__members=user) |
-			models.Q(conversation__partnership__user_a=user) |
-			models.Q(conversation__partnership__user_b=user) |
-			models.Q(conversation__goal__members=user)
-		).order_by('-created_at')
+		qs = (
+			Message.objects.filter(
+				models.Q(conversation__members=user) |
+				models.Q(conversation__partnership__user_a=user) |
+				models.Q(conversation__partnership__user_b=user) |
+				models.Q(conversation__goal__members=user)
+			)
+			.distinct()
+			.order_by('-created_at')
+		)
 		conversation_id = self.request.query_params.get('conversation')
 		if conversation_id:
 			qs = qs.filter(conversation_id=conversation_id)
