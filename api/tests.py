@@ -13,7 +13,7 @@ from django.utils import timezone
 from datetime import datetime, timezone as dt_timezone, timedelta
 
 from accounts.models import User
-from api.models import BuddyRequest, Partnership, Profile, Conversation, Message, Goal, Task, TimerSession, Evidence, Notification, UserDailyActivity, InactivityNudgeLog, CheckinReminderLog, Waitlister
+from api.models import BuddyRequest, Partnership, Profile, Conversation, Message, Goal, GoalMembership, Task, TimerSession, Evidence, Notification, UserDailyActivity, InactivityNudgeLog, CheckinReminderLog, Waitlister
 from api.serializers import UserSerializer, MessageSerializer
 from api.consumers import _ScopeRequest
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -836,6 +836,65 @@ class GoalSharingEndpointsTests(APITestCase):
 		self.assertEqual(resp.data['name'], 'Daily Wins')
 		conversation.refresh_from_db()
 		self.assertEqual(conversation.name, 'Daily Wins')
+
+	def test_goal_members_endpoint_is_restricted_to_goal_members(self):
+		goal = Goal.objects.create(user=self.owner, title='Members goal')
+		goal.members.add(self.member)
+
+		url = reverse('goals-members', kwargs={'pk': goal.id})
+
+		self.client.force_authenticate(user=self.owner)
+		resp_owner = self.client.get(url)
+		self.assertEqual(resp_owner.status_code, status.HTTP_200_OK)
+		owner_ids = {row['id'] for row in resp_owner.data}
+		self.assertSetEqual(owner_ids, {self.owner.id, self.member.id})
+
+		self.client.force_authenticate(user=self.member)
+		resp_member = self.client.get(url)
+		self.assertEqual(resp_member.status_code, status.HTTP_200_OK)
+
+		self.client.force_authenticate(user=self.stranger)
+		resp_stranger = self.client.get(url)
+		# Depending on queryset filtering, this may be 403 or 404.
+		self.assertIn(resp_stranger.status_code, [status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND])
+
+	def test_goal_owner_can_remove_members(self):
+		goal = Goal.objects.create(user=self.owner, title='Remove member goal')
+		# Create membership rows via the through model so GoalMembership post_save
+		# signals run (goal.members.add uses bulk_create and won't trigger post_save).
+		GoalMembership.objects.get_or_create(goal=goal, user=self.owner, defaults={'added_by': self.owner})
+		GoalMembership.objects.get_or_create(goal=goal, user=self.member, defaults={'added_by': self.owner})
+		conversation_id = goal.conversation.id
+
+		remove_url = reverse('goals-remove-member', kwargs={'pk': goal.id, 'user_id': self.member.id})
+
+		# Non-owner cannot remove
+		self.client.force_authenticate(user=self.member)
+		forbidden = self.client.delete(remove_url)
+		self.assertEqual(forbidden.status_code, status.HTTP_403_FORBIDDEN)
+
+		# Owner removes member
+		self.client.force_authenticate(user=self.owner)
+		ok = self.client.delete(remove_url)
+		self.assertEqual(ok.status_code, status.HTTP_200_OK)
+		goal.refresh_from_db()
+		self.assertFalse(goal.members.filter(id=self.member.id).exists())
+
+		conversation = Conversation.objects.get(id=conversation_id)
+		self.assertFalse(conversation.members.filter(id=self.member.id).exists())
+
+		# Removed member no longer has access to the goal
+		self.client.force_authenticate(user=self.member)
+		detail_url = reverse('goals-detail', kwargs={'pk': goal.id})
+		detail = self.client.get(detail_url)
+		self.assertEqual(detail.status_code, status.HTTP_404_NOT_FOUND)
+
+	def test_goal_owner_cannot_remove_self(self):
+		goal = Goal.objects.create(user=self.owner, title='No self removal')
+		url = reverse('goals-remove-member', kwargs={'pk': goal.id, 'user_id': self.owner.id})
+		self.client.force_authenticate(user=self.owner)
+		resp = self.client.delete(url)
+		self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 class ConversationFeatureEndpointsTests(APITestCase):
