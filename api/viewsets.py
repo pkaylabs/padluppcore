@@ -153,6 +153,18 @@ def _waitlist_gate_response(email: str | None):
 	return Response({'detail': WAITLIST_BETA_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
 
 
+def _email_notifications_enabled() -> bool:
+	enabled = bool(getattr(settings, 'EMAIL_NOTIFICATIONS_ENABLED', False))
+	if not enabled:
+		return False
+	# Require Mailgun config as well, otherwise skip silently.
+	return bool(
+		getattr(settings, 'MAILGUN_API_KEY', '')
+		and getattr(settings, 'MAILGUN_DOMAIN', '')
+		and getattr(settings, 'MAILGUN_FROM_EMAIL', '')
+	)
+
+
 def _generate_password_reset_otp() -> str:
 	# 6-digit numeric OTP
 	return f"{secrets.randbelow(1_000_000):06d}"
@@ -1271,9 +1283,37 @@ class GoalViewSet(viewsets.ModelViewSet):
 		if not goal.is_public:
 			return Response({'detail': 'This goal is not public.'}, status=status.HTTP_403_FORBIDDEN)
 
-		_add_goal_member(goal, request.user, request.user)
+		created = _add_goal_member(goal, request.user, request.user)
 		goal.is_shared = True
 		goal.save(update_fields=['is_shared', 'updated_at'])
+
+		# Notify the goal owner (best-effort). Only send if this request actually
+		# created a new membership row to avoid duplicate emails.
+		if created and _email_notifications_enabled():
+			owner = getattr(goal, 'user', None)
+			joiner = request.user
+			if owner and owner.email and owner.id != joiner.id:
+				joiner_name = (getattr(joiner, 'name', '') or getattr(joiner, 'email', '') or 'Someone').strip()
+				owner_name = (getattr(owner, 'name', '') or 'there').strip()
+				goal_title = (getattr(goal, 'title', '') or 'your goal').strip()
+				goal_url = _goal_direct_link(goal.id)
+				subject = f"{joiner_name} just joined your goal — let’s go!"
+				text = (
+					f"Hi {owner_name},\n\n"
+					f"Good news: {joiner_name} just joined your goal \"{goal_title}\" on Padlupp.\n\n"
+					"This is your moment to set the tone — a quick welcome message can make it way more fun (and way more likely they stick with it).\n\n"
+					f"Jump into the goal: {goal_url}\n\n"
+					f"Jump into the conversation and say hi! The more you engage with your accountability partner, the more likely you both are to achieve your goals.\nhttps://app.padlupp.com/messages"
+				)
+				try:
+					send_mailgun_email(
+						to_email=owner.email,
+						subject=subject,
+						text=text,
+						tags=['goal_join'],
+					)
+				except EmailSendError:
+					pass
 		return Response(
 			{
 				'detail': 'Joined goal.',
