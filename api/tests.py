@@ -789,6 +789,30 @@ class GoalSharingEndpointsTests(APITestCase):
 		self.assertTrue(goal.conversation.is_group)
 		self.assertSetEqual(set(goal.conversation.members.values_list('id', flat=True)), {self.owner.id, self.member.id})
 
+	@override_settings(
+		EMAIL_NOTIFICATIONS_ENABLED=True,
+		MAILGUN_API_KEY='test',
+		MAILGUN_DOMAIN='test',
+		MAILGUN_FROM_EMAIL='no-reply@test.com',
+	)
+	@patch('api.viewsets.send_mailgun_email')
+	def test_join_goal_emails_goal_owner(self, mock_send_mailgun_email):
+		goal = Goal.objects.create(user=self.owner, title='Email goal', is_public=True)
+		goal.refresh_from_db()
+
+		join_url = reverse('goals-join-goal')
+		self.client.force_authenticate(user=self.member)
+		resp = self.client.post(join_url, data={'shared_id': str(goal.shared_id)}, format='json')
+		self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+		mock_send_mailgun_email.assert_called()
+		called_kwargs = mock_send_mailgun_email.call_args.kwargs
+		self.assertEqual(called_kwargs.get('to_email'), self.owner.email)
+		self.assertIn(self.member.name, called_kwargs.get('subject', ''))
+		text = called_kwargs.get('text', '')
+		self.assertIn(self.member.name, text)
+		self.assertIn(f'https://app.padlupp.com/goals/{goal.id}', text)
+
 	@patch('api.viewsets.send_mailgun_email')
 	def test_share_goal_adds_existing_users_and_invites_unknown_emails(self, mock_send_mailgun_email):
 		goal = Goal.objects.create(user=self.owner, title='Shared goal', is_public=True)
