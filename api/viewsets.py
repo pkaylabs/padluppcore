@@ -1374,6 +1374,64 @@ class GoalViewSet(viewsets.ModelViewSet):
 			status=status.HTTP_200_OK,
 		)
 
+	@extend_schema(
+		responses={200: UserSerializer(many=True), 403: DetailResponseSerializer, 404: DetailResponseSerializer},
+		description='Return the list of all members in this goal. Only goal members can access this endpoint.',
+	)
+	@action(detail=True, methods=['get'], url_path='members')
+	def members(self, request, pk=None):
+		goal = self.get_object()
+		allowed_ids = set(_goal_member_ids(goal))
+		if request.user.id not in allowed_ids:
+			return Response({'detail': 'You are not a member of this goal.'}, status=status.HTTP_403_FORBIDDEN)
+
+		# Preserve stable ordering (owner/partners first if present in _goal_member_ids).
+		ordered_ids = _goal_member_ids(goal)
+		users = list(User.objects.filter(id__in=ordered_ids, deleted=False))
+		user_by_id = {u.id: u for u in users}
+		ordered_users = [user_by_id[uid] for uid in ordered_ids if uid in user_by_id]
+		return Response(UserSerializer(ordered_users, many=True, context={'request': request}).data, status=status.HTTP_200_OK)
+
+	@extend_schema(
+		parameters=[
+			OpenApiParameter(
+				name='user_id',
+				type=OpenApiTypes.INT,
+				location=OpenApiParameter.PATH,
+				required=True,
+				description='User id of the member to remove from this goal.',
+			),
+		],
+		responses={200: DetailResponseSerializer, 400: DetailResponseSerializer, 403: DetailResponseSerializer, 404: DetailResponseSerializer},
+		description='Remove a member from this goal. Only the goal owner can remove members.',
+	)
+	@action(detail=True, methods=['delete'], url_path=r'members/(?P<user_id>\d+)')
+	def remove_member(self, request, pk=None, user_id=None):
+		goal = self.get_object()
+		if goal.user_id != request.user.id:
+			return Response({'detail': 'Only the goal owner can remove members.'}, status=status.HTTP_403_FORBIDDEN)
+
+		try:
+			member_id = int(user_id)
+		except (TypeError, ValueError):
+			return Response({'detail': 'Invalid user_id.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		if member_id == goal.user_id:
+			return Response({'detail': 'The goal owner cannot be removed.'}, status=status.HTTP_400_BAD_REQUEST)
+		if goal.partnership_id and member_id in [getattr(goal.partnership, 'user_a_id', None), getattr(goal.partnership, 'user_b_id', None)]:
+			return Response({'detail': 'Partnership members cannot be removed from a partnership goal.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		with transaction.atomic():
+			deleted_count, _ = GoalMembership.objects.filter(goal=goal, user_id=member_id).delete()
+			if deleted_count == 0:
+				return Response({'detail': 'User is not a member of this goal.'}, status=status.HTTP_404_NOT_FOUND)
+
+			conversation = Conversation.objects.filter(goal=goal).first()
+			if conversation:
+				ConversationMembership.objects.filter(conversation=conversation, user_id=member_id).delete()
+
+		return Response({'detail': 'Member removed.'}, status=status.HTTP_200_OK)
+
 
 class PartnershipViewSet(viewsets.ModelViewSet):
 	serializer_class = PartnershipSerializer
