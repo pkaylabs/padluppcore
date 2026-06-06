@@ -216,6 +216,8 @@ class BuddyViewSet(viewsets.ViewSet):
 		- Adds `connection_status` = pending|none.
 		"""
 		user = request.user
+		# get experience as query param
+		category = request.query_params.get('category') or request.data.get('category') or ''.strip()
 		profile, _ = Profile.objects.get_or_create(user=user)
 		buddy_user_ids = self._buddy_user_ids(user)
 
@@ -232,7 +234,7 @@ class BuddyViewSet(viewsets.ViewSet):
 		excluded_user_ids = set(buddy_user_ids) | {user.id}
 
 		# crude similarity: match on keywords from the user's experience
-		experience_text = (profile.experience or '').strip()
+		experience_text = (profile.experience + ' ' + category or '').strip()
 		keywords = [w.strip(' ,.;:!"\'()[]{}').lower() for w in experience_text.split()]
 		keywords = [w for w in keywords if len(w) >= 4]
 		keywords = list(dict.fromkeys(keywords))[:6]
