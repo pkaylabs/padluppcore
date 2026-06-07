@@ -4,6 +4,7 @@ from django.conf import settings
 from django.db.models import F, Max, Q
 from django.db.models.functions import Coalesce
 from django.utils import timezone
+from django.utils.html import escape
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -145,26 +146,44 @@ def _checkin_recipients_for_goal(goal: Goal):
 	return list(recipients.values())
 
 
-def _build_checkin_reminder_email(*, recipient_name: str, goal_title: str, due_date, frequency: str):
+def _build_checkin_reminder_email(*, recipient_name: str, reminders: list[dict]):
 	display_name = (recipient_name or '').strip() or 'there'
-	goal_name = (goal_title or '').strip() or 'your goal'
 	app_url = (getattr(settings, 'PADLUPP_APP_URL', '') or 'https://app.padlupp.com').rstrip('/')
+	reminder_count = len(reminders)
 
-	subject = f'Gentle check-in reminder for {goal_name}'
+	subject = (
+		'Your Padlupp check-in reminder'
+		if reminder_count == 1
+		else f'Your {reminder_count} Padlupp check-in reminders'
+	)
+	text_items = '\n'.join(
+		f'- {(item["goal_title"] or "").strip() or "Your goal"} '
+		f'(due {item["due_date"].isoformat()}, {item["frequency"].lower().replace("-", " ")})'
+		for item in reminders
+	)
 	text = (
 		f'Hi {display_name},\n\n'
-		f'Just a gentle reminder that your check-in for "{goal_name}" is due tomorrow ({due_date.isoformat()}).\n\n'
+		'Here are your upcoming check-ins:\n\n'
+		f'{text_items}\n\n'
 		'Even a tiny update matters. Small steps compound, and your partner is cheering you on. '
 		'You do not need to be perfect, just present.\n\n'
 		f'Open Padlupp and check in: {app_url}\n\n'
 		'With care,\n'
 		'The Padlupp team'
 	)
+	html_items = ''.join(
+		'<li style="margin-bottom:10px;">'
+		f'<strong>{escape((item["goal_title"] or "").strip() or "Your goal")}</strong><br>'
+		f'Due {item["due_date"].isoformat()} &middot; '
+		f'{escape(item["frequency"].lower().replace("-", " "))}'
+		'</li>'
+		for item in reminders
+	)
 	html = (
 		'<html><body style="font-family:Arial,sans-serif;line-height:1.6;color:#1f2937;">'
-		f'<p>Hi {display_name},</p>'
-		f'<p>Just a gentle reminder that your check-in for <strong>{goal_name}</strong> is due tomorrow '
-		f'(<strong>{due_date.isoformat()}</strong>).</p>'
+		f'<p>Hi {escape(display_name)},</p>'
+		'<p>Here are your upcoming check-ins:</p>'
+		f'<ul style="padding-left:20px;">{html_items}</ul>'
 		'<p>Even a tiny update matters. Small steps compound, and your partner is cheering you on. '
 		'You do not need to be perfect, just present.</p>'
 		f'<p><a href="{app_url}" style="display:inline-block;padding:12px 18px;border-radius:999px;background:#17384a;color:#ffffff;text-decoration:none;font-weight:700;">Check in on Padlupp</a></p>'
@@ -194,6 +213,7 @@ class GoalCheckinReminderCronView(APIView):
 		emails_sent = 0
 		emails_skipped = 0
 		emails_failed = 0
+		reminders_by_recipient = {}
 
 		for goal in goals.iterator():
 			goals_checked += 1
@@ -217,32 +237,51 @@ class GoalCheckinReminderCronView(APIView):
 					emails_skipped += 1
 					continue
 
-				subject, text, html = _build_checkin_reminder_email(
-					recipient_name=getattr(recipient, 'name', '') or getattr(recipient, 'email', ''),
-					goal_title=goal.title,
-					due_date=tomorrow_local,
-					frequency=frequency,
+				recipient_batch = reminders_by_recipient.setdefault(
+					recipient.id,
+					{'recipient': recipient, 'reminders': []},
+				)
+				recipient_batch['reminders'].append(
+					{
+						'goal': goal,
+						'goal_title': goal.title,
+						'due_date': tomorrow_local,
+						'frequency': frequency,
+					}
 				)
 
-				try:
-					send_mailgun_email(
-						to_email=recipient.email,
-						subject=subject,
-						text=text,
-						html=html,
-						tags=['checkin_reminder', frequency.lower().replace('-', '_')],
+		for recipient_batch in reminders_by_recipient.values():
+			recipient = recipient_batch['recipient']
+			reminders = recipient_batch['reminders']
+			subject, text, html = _build_checkin_reminder_email(
+				recipient_name=getattr(recipient, 'name', '') or getattr(recipient, 'email', ''),
+				reminders=reminders,
+			)
+
+			try:
+				send_mailgun_email(
+					to_email=recipient.email,
+					subject=subject,
+					text=text,
+					html=html,
+					tags=['checkin_reminder', 'digest'],
+				)
+			except EmailSendError:
+				emails_failed += 1
+				continue
+
+			CheckinReminderLog.objects.bulk_create(
+				[
+					CheckinReminderLog(
+						goal=reminder['goal'],
+						user=recipient,
+						reminder_for_date=reminder['due_date'],
+						frequency=reminder['frequency'],
 					)
-				except EmailSendError:
-					emails_failed += 1
-					continue
-
-				CheckinReminderLog.objects.create(
-					goal=goal,
-					user=recipient,
-					reminder_for_date=tomorrow_local,
-					frequency=frequency,
-				)
-				emails_sent += 1
+					for reminder in reminders
+				]
+			)
+			emails_sent += 1
 
 		return Response(
 			{

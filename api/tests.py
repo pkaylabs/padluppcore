@@ -17,6 +17,7 @@ from api.models import BuddyRequest, Partnership, Profile, Conversation, Message
 from api.serializers import UserSerializer, MessageSerializer
 from api.consumers import _ScopeRequest
 from django.core.files.uploadedfile import SimpleUploadedFile
+from padluppcore.utils.email import EmailSendError
 
 
 @override_settings(EMAIL_NOTIFICATIONS_ENABLED=False)
@@ -420,10 +421,18 @@ class CheckinReminderCronEndpointTests(APITestCase):
 
 		self.assertEqual(resp1.status_code, status.HTTP_200_OK)
 		self.assertEqual(resp1.data['goals_due_tomorrow'], 2)
-		# sunday_goal -> owner + partner (2), three_day_goal -> owner (1)
-		self.assertEqual(resp1.data['emails_sent'], 3)
+		# The owner gets one digest for both goals; the partner gets one email.
+		self.assertEqual(resp1.data['emails_sent'], 2)
 		self.assertEqual(resp1.data['emails_failed'], 0)
-		self.assertEqual(mock_send_mailgun_email.call_count, 3)
+		self.assertEqual(mock_send_mailgun_email.call_count, 2)
+		owner_email = next(
+			call.kwargs for call in mock_send_mailgun_email.call_args_list
+			if call.kwargs['to_email'] == owner.email
+		)
+		self.assertIn('Sunday Checkin Goal', owner_email['text'])
+		self.assertIn('3 Day Goal', owner_email['text'])
+		self.assertIn('Your 2 Padlupp check-in reminders', owner_email['subject'])
+		self.assertEqual(CheckinReminderLog.objects.filter(user=owner).count(), 2)
 
 		with patch('django.utils.timezone.now', return_value=now):
 			resp2 = self.client.post(url)
@@ -432,11 +441,33 @@ class CheckinReminderCronEndpointTests(APITestCase):
 		self.assertEqual(resp2.data['goals_due_tomorrow'], 2)
 		self.assertEqual(resp2.data['emails_sent'], 0)
 		self.assertEqual(resp2.data['emails_skipped'], 3)
-		self.assertEqual(mock_send_mailgun_email.call_count, 3)
+		self.assertEqual(mock_send_mailgun_email.call_count, 2)
 		self.assertEqual(
 			CheckinReminderLog.objects.filter(goal=sunday_goal, reminder_for_date=(now.date() + timedelta(days=1))).count(),
 			2,
 		)
+
+	@patch('api.views.send_mailgun_email', side_effect=EmailSendError('send failed'))
+	def test_failed_digest_does_not_log_reminders(self, mock_send_mailgun_email):
+		url = reverse('cron-checkin-reminders')
+		now = datetime(2026, 4, 25, 10, 0, 0, tzinfo=dt_timezone.utc)
+		owner = self._mk_user(email='retry@test.com', phone='+10000000053', name='Retry')
+
+		for title in ('First Goal', 'Second Goal'):
+			Goal.objects.create(
+				user=owner,
+				title=title,
+				checkin_frequency=Goal.CHECKIN_SUNDAYS,
+			)
+
+		with patch('django.utils.timezone.now', return_value=now):
+			response = self.client.post(url)
+
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		self.assertEqual(response.data['emails_sent'], 0)
+		self.assertEqual(response.data['emails_failed'], 1)
+		self.assertEqual(mock_send_mailgun_email.call_count, 1)
+		self.assertEqual(CheckinReminderLog.objects.filter(user=owner).count(), 0)
 
 
 class TaskVisibilityTests(APITestCase):
