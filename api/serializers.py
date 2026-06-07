@@ -62,6 +62,19 @@ class UserSerializer(serializers.ModelSerializer):
 			'email_verified',
 			'preferred_notification_email',
 			'preferred_notification_phone',
+			'notify_on_new_message',
+			'notify_on_new_match',
+			'notify_on_reminders',
+		]
+
+
+class NotificationPreferencesSerializer(serializers.ModelSerializer):
+	class Meta:
+		model = User
+		fields = [
+			'notify_on_new_message',
+			'notify_on_new_match',
+			'notify_on_reminders',
 		]
 
 

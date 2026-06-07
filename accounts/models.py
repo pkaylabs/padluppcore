@@ -28,6 +28,11 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     preferred_notification_email = models.EmailField(max_length=50, blank=True, null=True)
     preferred_notification_phone = models.CharField(max_length=15, blank=True, null=True)
 
+    # notification preferences
+    notify_on_new_message = models.BooleanField(default=True)
+    notify_on_new_match = models.BooleanField(default=True)
+    notify_on_reminders = models.BooleanField(default=True)
+
     objects = AccountManager()
 
     USERNAME_FIELD = 'email'

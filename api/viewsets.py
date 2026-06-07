@@ -72,6 +72,7 @@ from .serializers import (
 	LoginRequestSerializer,
 	LoginResponseSerializer,
 	UserUpdateRequestSerializer,
+	NotificationPreferencesSerializer,
 )
 
 
@@ -1194,6 +1195,25 @@ class AuthViewSet(viewsets.ViewSet):
 		token = AuthToken.objects.create(user)[1]
 		resp_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
 		return Response({'user': UserSerializer(user, context={'request': request}).data, 'token': token}, status=resp_status)
+
+
+	# notification preferences
+	@extend_schema(
+		request=NotificationPreferencesSerializer,
+		responses={
+			200: NotificationPreferencesSerializer,
+			400: DetailResponseSerializer,
+		},
+		description='Update notification preferences for the current user. Allows partial updates.'
+	)
+	@action(detail=False, methods=['patch'], url_path='notification-preferences', permission_classes=[permissions.IsAuthenticated])
+	def notification_preferences(self, request):
+		user = request.user
+		serializer = NotificationPreferencesSerializer(user, data=request.data, partial=True)
+		if serializer.is_valid():
+			serializer.save()
+			return Response(serializer.data, status=status.HTTP_200_OK)
+		return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 	@extend_schema(
 		request=DeleteAccountRequestSerializer,
