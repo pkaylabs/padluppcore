@@ -235,7 +235,9 @@ class BuddyViewSet(viewsets.ViewSet):
 		excluded_user_ids = set(buddy_user_ids) | {user.id}
 
 		# crude similarity: match on keywords from the user's experience
-		experience_text = (profile.experience + ' ' + category or '').strip()
+		experience_text = (profile.experience).strip()
+		if category:
+			experience_text = category.strip()
 		keywords = [w.strip(' ,.;:!"\'()[]{}').lower() for w in experience_text.split()]
 		keywords = [w for w in keywords if len(w) >= 4]
 		keywords = list(dict.fromkeys(keywords))[:6]
