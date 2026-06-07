@@ -9,10 +9,12 @@ from django.db import transaction
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
+from accounts.models import User
 from padluppcore.utils.email import EmailSendError, send_mailgun_email
 
 from .activity import record_user_activity
 from .models import Conversation, ConversationMembership, Evidence, Goal, GoalMembership, Message, Notification, Task, TimerSession
+from .presence import get_online_user_ids
 from .serializers import MessageSerializer
 
 logger = logging.getLogger(__name__)
@@ -27,6 +29,17 @@ def _conversation_participant_ids(conversation: Conversation) -> list[int]:
     if conversation.goal_id:
         return list(conversation.goal.members.values_list('id', flat=True))
     return []
+
+
+def _notification_preference_enabled(user, notification_type: str) -> bool:
+    preference_by_type = {
+        'new_message': 'notify_on_new_message',
+        'new_match': 'notify_on_new_match',
+    }
+    preference_field = preference_by_type.get((notification_type or '').strip())
+    if not preference_field:
+        return True
+    return bool(getattr(user, preference_field, True))
 
 
 def _broadcast_conversation_state(conversation_id: int):
@@ -108,6 +121,56 @@ def record_message_activity(sender, instance: Message, created: bool, **kwargs):
     if not created or not instance.sender_id:
         return
     record_user_activity(instance.sender, at=instance.created_at, source='message_sent')
+
+
+@receiver(post_save, sender=Message)
+def notify_new_message(sender, instance: Message, created: bool, **kwargs):
+    if not created or not instance.sender_id or not instance.conversation_id:
+        return
+
+    conversation = (
+        Conversation.objects.select_related('partnership', 'goal')
+        .prefetch_related('members')
+        .filter(id=instance.conversation_id)
+        .first()
+    )
+    if not conversation:
+        return
+
+    recipient_ids = [
+        user_id
+        for user_id in _conversation_participant_ids(conversation)
+        if user_id != instance.sender_id
+    ]
+    online_user_ids = get_online_user_ids(instance.conversation_id)
+    recipient_ids = [
+        user_id for user_id in recipient_ids if user_id not in online_user_ids
+    ]
+    if not recipient_ids:
+        return
+
+    recipients = User.objects.filter(
+        id__in=recipient_ids,
+        notify_on_new_message=True,
+        is_active=True,
+        deleted=False,
+    )
+    preview = (instance.text or '').strip()
+    if len(preview) > 160:
+        preview = f'{preview[:157]}...'
+
+    for recipient in recipients:
+        Notification.objects.create(
+            user=recipient,
+            type='new_message',
+            payload={
+                'conversation_id': instance.conversation_id,
+                'message_id': instance.id,
+                'sender_id': instance.sender_id,
+                'sender_name': getattr(instance.sender, 'name', '') or '',
+                'preview': preview,
+            },
+        )
 
 
 @receiver(post_save, sender=Goal)
@@ -239,6 +302,16 @@ def _notification_email_content(notification: Notification) -> tuple[str, str]:
         text = 'You have a new match on Padlupp. Open the app to view details.'
         return subject, text
 
+    if ntype == 'new_message':
+        sender_name = payload.get('sender_name') or 'Someone'
+        preview = payload.get('preview')
+        subject = f'New message from {sender_name}'
+        text = f'{sender_name} sent you a new message on Padlupp.'
+        if preview:
+            text += f'\n\n{preview}'
+        text += '\n\nOpen the app to reply.'
+        return subject, text
+
     if ntype == 'new_task':
         title = payload.get('title') or 'a new task'
         subject = 'New task from your partner'
@@ -289,6 +362,8 @@ def email_notification_created(sender, instance: Notification, created: bool, **
 
     user = getattr(instance, 'user', None)
     if not user:
+        return
+    if not _notification_preference_enabled(user, instance.type):
         return
     to_email = getattr(user, 'preferred_notification_email', None) or getattr(user, 'email', None)
     if not to_email:

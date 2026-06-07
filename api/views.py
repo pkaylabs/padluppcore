@@ -18,6 +18,14 @@ from .models import CheckinReminderLog, Goal, InactivityNudgeLog
 from .nudges import build_inactivity_nudge_email
 
 
+def _notification_email_for_user(user) -> str:
+	return (
+		getattr(user, 'preferred_notification_email', None)
+		or getattr(user, 'email', None)
+		or ''
+	).strip()
+
+
 class InactiveUserNudgeView(APIView):
 	"""Send nudges to users who have been inactive for a configurable threshold.
 
@@ -33,7 +41,7 @@ class InactiveUserNudgeView(APIView):
 		cutoff = timezone.now() - timedelta(days=threshold_days)
 
 		users = (
-			User.objects.filter(is_active=True, deleted=False)
+			User.objects.filter(is_active=True, deleted=False, notify_on_reminders=True)
 			.exclude(Q(email__isnull=True) | Q(email=''))
 			.annotate(latest_daily_activity_at=Max('daily_activities__last_activity_at'))
 			.annotate(latest_activity_at=Coalesce('latest_daily_activity_at', 'last_login', 'created_at'))
@@ -70,7 +78,7 @@ class InactiveUserNudgeView(APIView):
 
 			try:
 				send_mailgun_email(
-					to_email=user.email,
+					to_email=_notification_email_for_user(user),
 					subject=subject,
 					text=text,
 					html=html,
@@ -133,14 +141,14 @@ def _is_goal_due_tomorrow(goal: Goal, today_local_date, tomorrow_local_date) -> 
 
 def _checkin_recipients_for_goal(goal: Goal):
 	recipients = {}
-	if goal.user_id and goal.user and goal.user.email:
+	if goal.user_id and goal.user and _notification_email_for_user(goal.user):
 		recipients[goal.user_id] = goal.user
 
 	partnership = getattr(goal, 'partnership', None)
 	if partnership:
-		if partnership.user_a_id and partnership.user_a and partnership.user_a.email:
+		if partnership.user_a_id and partnership.user_a and _notification_email_for_user(partnership.user_a):
 			recipients[partnership.user_a_id] = partnership.user_a
-		if partnership.user_b_id and partnership.user_b and partnership.user_b.email:
+		if partnership.user_b_id and partnership.user_b and _notification_email_for_user(partnership.user_b):
 			recipients[partnership.user_b_id] = partnership.user_b
 
 	return list(recipients.values())
@@ -213,6 +221,7 @@ class GoalCheckinReminderCronView(APIView):
 		emails_sent = 0
 		emails_skipped = 0
 		emails_failed = 0
+		preferences_skipped = 0
 		reminders_by_recipient = {}
 
 		for goal in goals.iterator():
@@ -228,6 +237,10 @@ class GoalCheckinReminderCronView(APIView):
 			frequency = (goal.checkin_frequency or Goal.CHECKIN_DAILY).strip().upper()
 
 			for recipient in _checkin_recipients_for_goal(goal):
+				if not recipient.notify_on_reminders:
+					preferences_skipped += 1
+					continue
+
 				already_sent = CheckinReminderLog.objects.filter(
 					goal=goal,
 					user=recipient,
@@ -260,7 +273,7 @@ class GoalCheckinReminderCronView(APIView):
 
 			try:
 				send_mailgun_email(
-					to_email=recipient.email,
+					to_email=_notification_email_for_user(recipient),
 					subject=subject,
 					text=text,
 					html=html,
@@ -290,6 +303,7 @@ class GoalCheckinReminderCronView(APIView):
 				'emails_sent': emails_sent,
 				'emails_skipped': emails_skipped,
 				'emails_failed': emails_failed,
+				'preferences_skipped': preferences_skipped,
 			},
 			status=status.HTTP_200_OK,
 		)

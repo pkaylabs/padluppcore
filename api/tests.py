@@ -15,7 +15,7 @@ from django.utils import timezone
 from datetime import datetime, timezone as dt_timezone, timedelta
 
 from accounts.models import User
-from api.models import BuddyRequest, Partnership, Profile, Conversation, Message, Goal, GoalMembership, Task, TimerSession, Evidence, Notification, UserDailyActivity, InactivityNudgeLog, CheckinReminderLog, Waitlister
+from api.models import BuddyRequest, Partnership, Profile, Conversation, Message, Goal, GoalMembership, Match, Task, TimerSession, Evidence, Notification, UserDailyActivity, InactivityNudgeLog, CheckinReminderLog, Waitlister
 from api.serializers import UserSerializer, MessageSerializer
 from api.consumers import _ScopeRequest
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -387,6 +387,30 @@ class InactivityNudgeEndpointTests(APITestCase):
 			).exists()
 		)
 
+	@patch('api.views.send_mailgun_email')
+	def test_nudge_respects_reminder_preference(self, mock_send_mailgun_email):
+		url = reverse('cron-nudge-inactive-users')
+		now = datetime(2026, 4, 25, 12, 0, 0, tzinfo=dt_timezone.utc)
+		opted_out = self._mk_user(email='no-nudges@test.com', phone='+10000000043', name='No Nudges')
+		opted_out.notify_on_reminders = False
+		opted_out.save(update_fields=['notify_on_reminders'])
+
+		UserDailyActivity.objects.create(
+			user=opted_out,
+			activity_date=(now - timedelta(days=15)).date(),
+			first_activity_at=now - timedelta(days=15),
+			last_activity_at=now - timedelta(days=15),
+			source='seed',
+		)
+
+		with patch('django.utils.timezone.now', return_value=now):
+			response = self.client.post(url)
+
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		self.assertEqual(response.data['nudged_count'], 0)
+		mock_send_mailgun_email.assert_not_called()
+		self.assertFalse(InactivityNudgeLog.objects.filter(user=opted_out).exists())
+
 
 @override_settings(
 	CACHES={
@@ -547,6 +571,28 @@ class CheckinReminderCronEndpointTests(APITestCase):
 		self.assertEqual(response.data['emails_failed'], 1)
 		self.assertEqual(mock_send_mailgun_email.call_count, 1)
 		self.assertEqual(CheckinReminderLog.objects.filter(user=owner).count(), 0)
+
+	@patch('api.views.send_mailgun_email')
+	def test_checkin_digest_respects_reminder_preference(self, mock_send_mailgun_email):
+		url = reverse('cron-checkin-reminders')
+		now = datetime(2026, 4, 25, 10, 0, 0, tzinfo=dt_timezone.utc)
+		owner = self._mk_user(email='no-checkins@test.com', phone='+10000000054', name='No Checkins')
+		owner.notify_on_reminders = False
+		owner.save(update_fields=['notify_on_reminders'])
+		goal = Goal.objects.create(
+			user=owner,
+			title='Muted Goal',
+			checkin_frequency=Goal.CHECKIN_SUNDAYS,
+		)
+
+		with patch('django.utils.timezone.now', return_value=now):
+			response = self.client.post(url)
+
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		self.assertEqual(response.data['emails_sent'], 0)
+		self.assertEqual(response.data['preferences_skipped'], 1)
+		mock_send_mailgun_email.assert_not_called()
+		self.assertFalse(CheckinReminderLog.objects.filter(goal=goal, user=owner).exists())
 
 
 class TaskVisibilityTests(APITestCase):
@@ -860,6 +906,180 @@ class ConversationEndpointsTests(APITestCase):
 		rows2 = resp2.data.get('results', resp2.data)
 		self.assertEqual(len(rows2), 1)
 		self.assertEqual(rows2[0]['unread_count'], 1)
+
+
+class NotificationPreferenceTests(APITestCase):
+	def setUp(self):
+		cache.clear()
+
+	def tearDown(self):
+		cache.clear()
+		super().tearDown()
+
+	def _mk_user(self, *, email: str, phone: str, name: str):
+		user = User(email=email, phone=phone, name=name)
+		user.set_password('pass1234')
+		user.save()
+		Profile.objects.get_or_create(user=user)
+		return user
+
+	def test_new_message_notification_respects_recipient_preference(self):
+		sender = self._mk_user(email='message-sender@test.com', phone='+10000000081', name='Sender')
+		enabled = self._mk_user(email='message-enabled@test.com', phone='+10000000082', name='Enabled')
+		disabled = self._mk_user(email='message-disabled@test.com', phone='+10000000083', name='Disabled')
+		disabled.notify_on_new_message = False
+		disabled.save(update_fields=['notify_on_new_message'])
+
+		conversation = Conversation.objects.create(is_group=True, name='Preference Test')
+		conversation.members.add(sender, enabled, disabled)
+		message = Message.objects.create(conversation=conversation, sender=sender, text='Hello everyone')
+
+		self.assertTrue(
+			Notification.objects.filter(
+				user=enabled,
+				type='new_message',
+				payload__message_id=message.id,
+			).exists()
+		)
+		self.assertFalse(
+			Notification.objects.filter(
+				user=disabled,
+				type='new_message',
+				payload__message_id=message.id,
+			).exists()
+		)
+
+	def test_online_recipient_does_not_receive_new_message_notification(self):
+		sender = self._mk_user(email='online-sender@test.com', phone='+10000000087', name='Sender')
+		recipient = self._mk_user(email='online-recipient@test.com', phone='+10000000088', name='Online')
+		conversation = Conversation.objects.create(is_group=True, name='Online Test')
+		conversation.members.add(sender, recipient)
+		cache.set(
+			f'chat:conversation:{conversation.id}:online_user_ids',
+			{
+				str(recipient.id): {
+					'channel-a': timezone.now().isoformat(),
+					'channel-b': timezone.now().isoformat(),
+				}
+			},
+			timeout=90,
+		)
+
+		message = Message.objects.create(conversation=conversation, sender=sender, text='No alert needed')
+
+		self.assertFalse(
+			Notification.objects.filter(
+				user=recipient,
+				type='new_message',
+				payload__message_id=message.id,
+			).exists()
+		)
+
+	def test_group_message_notifies_only_offline_recipients(self):
+		sender = self._mk_user(email='group-sender@test.com', phone='+10000000089', name='Sender')
+		online = self._mk_user(email='group-online@test.com', phone='+10000000090', name='Online')
+		offline = self._mk_user(email='group-offline@test.com', phone='+10000000091', name='Offline')
+		conversation = Conversation.objects.create(is_group=True, name='Mixed Presence')
+		conversation.members.add(sender, online, offline)
+		cache.set(
+			f'chat:conversation:{conversation.id}:online_user_ids',
+			{str(online.id): {'online-channel': timezone.now().isoformat()}},
+			timeout=90,
+		)
+
+		message = Message.objects.create(conversation=conversation, sender=sender, text='Mixed delivery')
+
+		self.assertFalse(
+			Notification.objects.filter(
+				user=online,
+				type='new_message',
+				payload__message_id=message.id,
+			).exists()
+		)
+		self.assertTrue(
+			Notification.objects.filter(
+				user=offline,
+				type='new_message',
+				payload__message_id=message.id,
+			).exists()
+		)
+
+	def test_stale_presence_and_cache_failure_fall_back_to_notification(self):
+		sender = self._mk_user(email='fallback-sender@test.com', phone='+10000000092', name='Sender')
+		stale_recipient = self._mk_user(email='stale-recipient@test.com', phone='+10000000093', name='Stale')
+		failure_recipient = self._mk_user(email='failure-recipient@test.com', phone='+10000000094', name='Failure')
+		conversation = Conversation.objects.create(is_group=True, name='Fallback Test')
+		conversation.members.add(sender, stale_recipient)
+		cache.set(
+			f'chat:conversation:{conversation.id}:online_user_ids',
+			{
+				str(stale_recipient.id): {
+					'stale-channel': (timezone.now() - timedelta(minutes=5)).isoformat(),
+				}
+			},
+			timeout=90,
+		)
+
+		stale_message = Message.objects.create(conversation=conversation, sender=sender, text='Stale alert')
+		self.assertTrue(
+			Notification.objects.filter(
+				user=stale_recipient,
+				type='new_message',
+				payload__message_id=stale_message.id,
+			).exists()
+		)
+
+		failure_conversation = Conversation.objects.create(is_group=True, name='Cache Failure')
+		failure_conversation.members.add(sender, failure_recipient)
+		with patch('api.presence.cache.get', side_effect=RuntimeError('cache unavailable')):
+			failure_message = Message.objects.create(
+				conversation=failure_conversation,
+				sender=sender,
+				text='Fallback alert',
+			)
+
+		self.assertTrue(
+			Notification.objects.filter(
+				user=failure_recipient,
+				type='new_message',
+				payload__message_id=failure_message.id,
+			).exists()
+		)
+
+	def test_new_match_notification_respects_each_users_preference(self):
+		user_a = self._mk_user(email='match-a@test.com', phone='+10000000084', name='Match A')
+		user_b = self._mk_user(email='match-b@test.com', phone='+10000000085', name='Match B')
+		user_b.notify_on_new_match = False
+		user_b.save(update_fields=['notify_on_new_match'])
+		Match.objects.create(from_user=user_b, to_user=user_a, action=Match.LIKE)
+
+		self.client.force_authenticate(user=user_a)
+		response = self.client.post(
+			reverse('matches-list'),
+			data={'to_user': user_b.id, 'action': Match.LIKE},
+			format='json',
+		)
+
+		self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+		self.assertTrue(Notification.objects.filter(user=user_a, type='new_match').exists())
+		self.assertFalse(Notification.objects.filter(user=user_b, type='new_match').exists())
+
+	@override_settings(
+		EMAIL_NOTIFICATIONS_ENABLED=True,
+		MAILGUN_API_KEY='test',
+		MAILGUN_DOMAIN='test',
+		MAILGUN_FROM_EMAIL='no-reply@test.com',
+	)
+	@patch('api.signals.send_mailgun_email')
+	def test_notification_email_signal_defensively_respects_preference(self, mock_send_mailgun_email):
+		user = self._mk_user(email='muted-email@test.com', phone='+10000000086', name='Muted Email')
+		user.notify_on_new_match = False
+		user.save(update_fields=['notify_on_new_match'])
+
+		with self.captureOnCommitCallbacks(execute=True):
+			Notification.objects.create(user=user, type='new_match', payload={})
+
+		mock_send_mailgun_email.assert_not_called()
 
 
 class GoalSharingEndpointsTests(APITestCase):

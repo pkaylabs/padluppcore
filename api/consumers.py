@@ -19,6 +19,7 @@ from knox.auth import TokenAuthentication
 
 from accounts.models import User
 from .models import Conversation, Message
+from .presence import PRESENCE_STALE_SECONDS as DEFAULT_PRESENCE_STALE_SECONDS, presence_cache_key
 from .serializers import MessageSerializer, UserSerializer
 
 
@@ -201,7 +202,7 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
 class ChatConsumer(AsyncWebsocketConsumer):
     HISTORY_LIMIT = 50
     PRESENCE_HEARTBEAT_SECONDS = 30
-    PRESENCE_STALE_SECONDS = 90
+    PRESENCE_STALE_SECONDS = DEFAULT_PRESENCE_STALE_SECONDS
     DEFAULT_MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25MB
 
     async def connect(self):
@@ -652,7 +653,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         )
 
     def _presence_cache_key(self, conversation_id: int) -> str:
-        return f'chat:conversation:{conversation_id}:online_user_ids'
+        return presence_cache_key(conversation_id)
 
     def _prune_presence_connections(self, connections: dict, now):
         cutoff = now - timedelta(seconds=self.PRESENCE_STALE_SECONDS)
