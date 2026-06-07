@@ -93,6 +93,12 @@ ASGI_APPLICATION = 'padluppcore.asgi.application'
 # - In production (multiple workers/instances), install `channels-redis` and set REDIS_URL.
 REDIS_URL = os.getenv('REDIS_URL', '').strip()
 if REDIS_URL:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': REDIS_URL,
+        }
+    }
     try:
         import channels_redis  # noqa: F401
 
@@ -111,6 +117,12 @@ if REDIS_URL:
             }
         }
 else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'padluppcore',
+        }
+    }
     CHANNEL_LAYERS = {
         'default': {
             'BACKEND': 'channels.layers.InMemoryChannelLayer',

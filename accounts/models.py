@@ -33,6 +33,8 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     notify_on_new_match = models.BooleanField(default=True)
     notify_on_reminders = models.BooleanField(default=True)
 
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+
     objects = AccountManager()
 
     USERNAME_FIELD = 'email'

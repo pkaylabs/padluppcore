@@ -5,6 +5,8 @@ import tempfile
 
 from django.conf import settings
 from django.test import override_settings
+from django.test import TransactionTestCase
+from django.core.cache import cache
 from rest_framework import status
 from rest_framework.test import APITestCase
 from rest_framework.test import APIRequestFactory
@@ -18,6 +20,8 @@ from api.serializers import UserSerializer, MessageSerializer
 from api.consumers import _ScopeRequest
 from django.core.files.uploadedfile import SimpleUploadedFile
 from padluppcore.utils.email import EmailSendError
+from asgiref.sync import async_to_sync
+from api.consumers import ChatConsumer
 
 
 @override_settings(EMAIL_NOTIFICATIONS_ENABLED=False)
@@ -382,6 +386,81 @@ class InactivityNudgeEndpointTests(APITestCase):
 				threshold_days=14,
 			).exists()
 		)
+
+
+@override_settings(
+	CACHES={
+		'default': {
+			'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+			'LOCATION': 'presence-tests',
+		}
+	}
+)
+class ChatPresenceTests(TransactionTestCase):
+	def setUp(self):
+		cache.clear()
+		self.user = User.objects.create_user(
+			email='presence@test.com',
+			phone='+10000000049',
+			name='Presence',
+			password='pass1234',
+		)
+		self.partner = User.objects.create_user(
+			email='presence-partner@test.com',
+			phone='+10000000050',
+			name='Partner',
+			password='pass1234',
+		)
+		partnership = Partnership.objects.create(user_a=self.user, user_b=self.partner)
+		self.conversation = Conversation.objects.create(partnership=partnership)
+		self.consumer = ChatConsumer()
+
+	def tearDown(self):
+		cache.clear()
+		super().tearDown()
+
+	def test_last_seen_updates_only_after_final_connection_closes(self):
+		set_presence = async_to_sync(self.consumer.set_user_online)
+		get_online_ids = async_to_sync(self.consumer.get_online_user_ids)
+
+		set_presence(self.user.id, self.conversation.id, True, 'channel-a')
+		set_presence(self.user.id, self.conversation.id, True, 'channel-b')
+		set_presence(self.user.id, self.conversation.id, False, 'channel-a')
+
+		self.user.refresh_from_db()
+		self.assertIsNone(self.user.last_seen_at)
+		self.assertEqual(get_online_ids(self.conversation.id), [self.user.id])
+
+		disconnected_at = datetime(2026, 6, 7, 12, 0, tzinfo=dt_timezone.utc)
+		with patch('api.consumers.timezone.now', return_value=disconnected_at):
+			set_presence(self.user.id, self.conversation.id, False, 'channel-b')
+
+		self.user.refresh_from_db()
+		self.assertEqual(self.user.last_seen_at, disconnected_at)
+		self.assertEqual(get_online_ids(self.conversation.id), [])
+
+	def test_last_seen_snapshot_survives_presence_cache_clear(self):
+		last_seen_at = datetime(2026, 6, 6, 9, 30, tzinfo=dt_timezone.utc)
+		User.objects.filter(id=self.partner.id).update(last_seen_at=last_seen_at)
+		cache.clear()
+
+		last_seen = async_to_sync(self.consumer.get_last_seen_at_by_user_id)(self.conversation.id)
+
+		self.assertEqual(last_seen[str(self.partner.id)], last_seen_at.isoformat())
+
+	def test_stale_connection_is_pruned_and_saved_as_last_seen(self):
+		heartbeat_at = timezone.now() - timedelta(minutes=5)
+		cache.set(
+			self.consumer._presence_cache_key(self.conversation.id),
+			{str(self.user.id): {'abandoned-channel': heartbeat_at.isoformat()}},
+			timeout=None,
+		)
+
+		online_ids = async_to_sync(self.consumer.get_online_user_ids)(self.conversation.id)
+
+		self.user.refresh_from_db()
+		self.assertEqual(online_ids, [])
+		self.assertEqual(self.user.last_seen_at, heartbeat_at)
 
 
 class CheckinReminderCronEndpointTests(APITestCase):

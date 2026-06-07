@@ -73,7 +73,7 @@ class WebSocketDocsView(APIView):
 			"- Typing: `{'type':'typing','user_id':<id>,'user_name':<str>,'is_typing':<bool>}`\n"
 			"- Presence: `{'type':'presence','online_user_ids':[...],'last_seen_at_by_user_id':{...}}`\n"
 			"  - Note: `online_user_ids` is conversation-scoped (only participants of this conversation who are currently connected to this conversation's chat socket).\n"
-			"  - `last_seen_at_by_user_id` maps participant ids to the latest known ISO timestamp.\n"
+			"  - `last_seen_at_by_user_id` maps participant ids to the latest known disconnect timestamp, with legacy login/account timestamps used until a disconnect has been recorded. Online users should be rendered from `online_user_ids` instead.\n"
 			"- Delivered: `{'type':'delivered','message_id':<id>,'by_user_id':<id>}`\n"
 			"- Read: `{'type':'read','message_ids':[...],'by_user_id':<id>}`\n"
 			"- Read all: `{'type':'read_all','by_user_id':<id>}`\n"

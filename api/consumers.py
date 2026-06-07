@@ -1,16 +1,20 @@
+import asyncio
 import base64
 import binascii
 import json
+from datetime import timedelta
 from urllib.parse import parse_qs
 
 from django.conf import settings
 from django.core.files.base import ContentFile
+from django.db.models.functions import Coalesce
 from django.utils.text import get_valid_filename
 
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.core.cache import cache
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from knox.auth import TokenAuthentication
 
 from accounts.models import User
@@ -196,7 +200,8 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
 
 class ChatConsumer(AsyncWebsocketConsumer):
     HISTORY_LIMIT = 50
-    PRESENCE_TTL_SECONDS = 60
+    PRESENCE_HEARTBEAT_SECONDS = 30
+    PRESENCE_STALE_SECONDS = 90
     DEFAULT_MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25MB
 
     async def connect(self):
@@ -223,7 +228,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self._pending_file_meta = None
 
         # Presence tracking (best-effort)
-        await self.set_user_online(user.id, self.conversation_id, True)
+        await self.set_user_online(user.id, self.conversation_id, True, self.channel_name)
+        self._presence_heartbeat_task = asyncio.create_task(self._presence_heartbeat())
         await self.broadcast_presence()
 
         # Send message history to the connecting client
@@ -243,11 +249,37 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self.broadcast_conversation_updates()
 
     async def disconnect(self, close_code):
+        heartbeat_task = getattr(self, '_presence_heartbeat_task', None)
+        if heartbeat_task:
+            heartbeat_task.cancel()
+
         user = self.scope.get('user')
-        if user and getattr(user, 'is_authenticated', False):
-            await self.set_user_online(user.id, self.conversation_id, False)
+        if (
+            user
+            and getattr(user, 'is_authenticated', False)
+            and getattr(self, 'conversation_id', None)
+        ):
+            await self.set_user_online(user.id, self.conversation_id, False, self.channel_name)
             await self.broadcast_presence()
-        await self.channel_layer.group_discard(self.group_name, self.channel_name)
+        group_name = getattr(self, 'group_name', None)
+        if group_name:
+            await self.channel_layer.group_discard(group_name, self.channel_name)
+
+    async def _presence_heartbeat(self):
+        try:
+            while True:
+                await asyncio.sleep(self.PRESENCE_HEARTBEAT_SECONDS)
+                user = self.scope.get('user')
+                if not user or not getattr(user, 'is_authenticated', False):
+                    return
+                await self.set_user_online(
+                    user.id,
+                    self.conversation_id,
+                    True,
+                    self.channel_name,
+                )
+        except asyncio.CancelledError:
+            return
 
     def _max_upload_bytes(self) -> int:
         try:
@@ -622,35 +654,101 @@ class ChatConsumer(AsyncWebsocketConsumer):
     def _presence_cache_key(self, conversation_id: int) -> str:
         return f'chat:conversation:{conversation_id}:online_user_ids'
 
-    def _presence_last_seen_cache_key(self, conversation_id: int) -> str:
-        return f'chat:conversation:{conversation_id}:last_seen_at_by_user_id'
+    def _prune_presence_connections(self, connections: dict, now):
+        cutoff = now - timedelta(seconds=self.PRESENCE_STALE_SECONDS)
+        active = {}
+        stale_last_seen = {}
+
+        for user_id, raw_connections in connections.items():
+            if not isinstance(raw_connections, dict):
+                continue
+
+            active_connections = {}
+            latest_stale_at = None
+            for connection_id, heartbeat_at_raw in raw_connections.items():
+                heartbeat_at = parse_datetime(str(heartbeat_at_raw))
+                if not heartbeat_at:
+                    continue
+                if timezone.is_naive(heartbeat_at):
+                    heartbeat_at = timezone.make_aware(heartbeat_at, timezone.get_default_timezone())
+                if heartbeat_at >= cutoff:
+                    active_connections[str(connection_id)] = heartbeat_at.isoformat()
+                elif latest_stale_at is None or heartbeat_at > latest_stale_at:
+                    latest_stale_at = heartbeat_at
+
+            if active_connections:
+                active[str(user_id)] = active_connections
+            elif latest_stale_at:
+                stale_last_seen[int(user_id)] = latest_stale_at
+
+        for user_id, last_seen_at in stale_last_seen.items():
+            User.objects.filter(id=user_id).update(last_seen_at=last_seen_at)
+
+        return active
 
     @database_sync_to_async
     def get_online_user_ids(self, conversation_id: int):
         key = self._presence_cache_key(conversation_id)
-        ids = cache.get(key) or []
-        return sorted({int(x) for x in ids})
+        connections = cache.get(key) or {}
+        if not isinstance(connections, dict):
+            return []
+        connections = self._prune_presence_connections(connections, timezone.now())
+        if connections:
+            cache.set(key, connections, timeout=self.PRESENCE_STALE_SECONDS)
+        else:
+            cache.delete(key)
+        return sorted(int(user_id) for user_id in connections)
 
     @database_sync_to_async
     def get_last_seen_at_by_user_id(self, conversation_id: int):
-        key = self._presence_last_seen_cache_key(conversation_id)
-        raw = cache.get(key) or {}
-        return {str(k): v for k, v in raw.items()}
+        try:
+            conv = Conversation.objects.select_related('partnership', 'goal').prefetch_related('members').get(id=conversation_id)
+        except Conversation.DoesNotExist:
+            return {}
+
+        participant_ids = list(conv.members.values_list('id', flat=True))
+        if not participant_ids and conv.partnership_id:
+            participant_ids = [conv.partnership.user_a_id, conv.partnership.user_b_id]
+        elif not participant_ids and conv.goal_id:
+            participant_ids = list(conv.goal.members.values_list('id', flat=True))
+
+        return {
+            str(user_id): effective_last_seen.isoformat()
+            for user_id, effective_last_seen in User.objects.filter(
+                id__in=participant_ids,
+            )
+            .annotate(
+                effective_last_seen=Coalesce('last_seen_at', 'last_login', 'created_at')
+            )
+            .values_list('id', 'effective_last_seen')
+        }
 
     @database_sync_to_async
-    def set_user_online(self, user_id: int, conversation_id: int, online: bool):
+    def set_user_online(self, user_id: int, conversation_id: int, online: bool, connection_id: str):
         key = self._presence_cache_key(conversation_id)
-        last_seen_key = self._presence_last_seen_cache_key(conversation_id)
-        current = cache.get(key) or []
-        s = {int(x) for x in current}
+        connections = cache.get(key) or {}
+        if not isinstance(connections, dict):
+            connections = {}
+
+        now = timezone.now()
+        connections = self._prune_presence_connections(connections, now)
+        user_key = str(user_id)
+        user_connections = dict(connections.get(user_key) or {})
         if online:
-            s.add(int(user_id))
+            user_connections[connection_id] = now.isoformat()
+            connections[user_key] = user_connections
         else:
-            s.discard(int(user_id))
-        cache.set(key, list(s), timeout=self.PRESENCE_TTL_SECONDS)
-        last_seen = cache.get(last_seen_key) or {}
-        last_seen[str(user_id)] = timezone.now().isoformat()
-        cache.set(last_seen_key, last_seen, timeout=self.PRESENCE_TTL_SECONDS)
+            user_connections.pop(connection_id, None)
+            if user_connections:
+                connections[user_key] = user_connections
+            else:
+                connections.pop(user_key, None)
+                User.objects.filter(id=user_id).update(last_seen_at=now)
+
+        if connections:
+            cache.set(key, connections, timeout=self.PRESENCE_STALE_SECONDS)
+        else:
+            cache.delete(key)
 
     @database_sync_to_async
     def user_in_conversation(self, user_id, conversation_id):
