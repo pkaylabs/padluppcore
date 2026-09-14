@@ -3,8 +3,10 @@ from rest_framework import serializers
 from drf_spectacular.utils import extend_schema_field
 
 from django.conf import settings
+from django.utils import timezone
 
 from urllib.parse import urljoin
+from datetime import timedelta
 
 import json
 
@@ -25,9 +27,13 @@ from .models import (
 	Notification,
 	Conversation,
 	ConversationMembership,
+	GoalCheckin,
+	GoalCheckinBadge,
+	GoalCheckinReaction,
 	Message,
 	Waitlister,
 )
+from .matching import compatibility_details
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -66,6 +72,13 @@ class UserSerializer(serializers.ModelSerializer):
 			'notify_on_new_match',
 			'notify_on_reminders',
 		]
+
+
+class PublicUserSerializer(UserSerializer):
+	"""Identity fields safe to expose to other Padlupp users."""
+
+	class Meta(UserSerializer.Meta):
+		fields = ['id', 'name', 'avatar']
 
 
 class NotificationPreferencesSerializer(serializers.ModelSerializer):
@@ -176,10 +189,11 @@ class CommaSeparatedListField(serializers.Field):
 
 
 class ProfileSerializer(serializers.ModelSerializer):
-	user = UserSerializer(read_only=True)
+	user = PublicUserSerializer(read_only=True)
 	interests = CommaSeparatedListField(required=False)
 	compatibility_score = serializers.SerializerMethodField()
 	rating = serializers.SerializerMethodField()
+	compatibility_reasons = serializers.SerializerMethodField()
 
 	class Meta:
 		model = Profile
@@ -197,22 +211,34 @@ class ProfileSerializer(serializers.ModelSerializer):
 			'created_at',
 			'updated_at',
 			'compatibility_score',
+			'compatibility_reasons',
 			'rating',
 		]
 
 	@extend_schema_field(serializers.IntegerField(allow_null=True))
 	def get_compatibility_score(self, obj):
-		# Placeholder: in a real implementation, calculate based on profile data.
-		import random
-		score = random.randint(50, 90)
-		return score
+		source = self.context.get('source_profile')
+		if source is None:
+			request = self.context.get('request')
+			user = getattr(request, 'user', None)
+			if user and getattr(user, 'is_authenticated', False):
+				source = getattr(user, 'profile', None)
+		return compatibility_details(source, obj)['score'] if source else None
+
+	@extend_schema_field(serializers.ListField(child=serializers.CharField()))
+	def get_compatibility_reasons(self, obj):
+		source = self.context.get('source_profile')
+		if source is None:
+			request = self.context.get('request')
+			user = getattr(request, 'user', None)
+			if user and getattr(user, 'is_authenticated', False):
+				source = getattr(user, 'profile', None)
+		return compatibility_details(source, obj)['reasons'] if source else []
 	
 	@extend_schema_field(serializers.FloatField(allow_null=True))
 	def get_rating(self, obj):
-		# Placeholder: in a real implementation, calculate based on user feedback.
-		import random
-		rating = round(random.uniform(3.0, 5.0), 1)
-		return rating
+		# Ratings stay empty until real user feedback exists; fabricated values are misleading.
+		return None
 
 
 class UserProfileResponseSerializer(serializers.Serializer):
@@ -240,11 +266,12 @@ class LongestStreakResponseSerializer(serializers.Serializer):
 
 
 class GoalSerializer(serializers.ModelSerializer):
-	user = UserSerializer(read_only=True)
+	user = PublicUserSerializer(read_only=True)
 	partnership = serializers.SerializerMethodField(read_only=True)
-	members = UserSerializer(many=True, read_only=True)
+	members = PublicUserSerializer(many=True, read_only=True)
 	conversation = serializers.PrimaryKeyRelatedField(queryset=Conversation.objects.all(), required=False, allow_null=True, write_only=True)
 	member_count = serializers.SerializerMethodField()
+	can_edit = serializers.SerializerMethodField()
 
 	class Meta:
 		model = Goal
@@ -255,6 +282,7 @@ class GoalSerializer(serializers.ModelSerializer):
 			'conversation',
 			'members',
 			'member_count',
+			'can_edit',
 			'title',
 			'category',
 			'importance',
@@ -272,13 +300,47 @@ class GoalSerializer(serializers.ModelSerializer):
 			'created_at',
 			'updated_at',
 		]
-		read_only_fields = ['user', 'partnership', 'members', 'member_count', 'is_shared', 'shared_id', 'invite_link']
+		read_only_fields = ['user', 'partnership', 'members', 'member_count', 'can_edit', 'is_shared', 'shared_id', 'invite_link']
 
 	def get_partnership(self, obj):
 		return obj.partnership_id if obj.partnership_id else None
 
 	def get_member_count(self, obj):
 		return obj.members.count() if hasattr(obj, 'members') else 0
+
+	def get_can_edit(self, obj):
+		request = self.context.get('request')
+		user = getattr(request, 'user', None)
+		if not user or not getattr(user, 'is_authenticated', False):
+			return False
+		return user.id == obj.user_id or obj.members.filter(id=user.id).exists()
+
+
+class PublicGoalPreviewSerializer(serializers.ModelSerializer):
+	owner = serializers.SerializerMethodField()
+	member_count = serializers.SerializerMethodField()
+
+	class Meta:
+		model = Goal
+		fields = [
+			'id', 'title', 'category', 'importance', 'checkin_frequency',
+			'description', 'start_date', 'target_date', 'status', 'owner', 'member_count',
+		]
+
+	def get_owner(self, obj):
+		avatar = None
+		if getattr(obj.user, 'avatar', None):
+			try:
+				avatar = obj.user.avatar.url
+			except (AttributeError, ValueError):
+				pass
+		request = self.context.get('request')
+		if request and avatar:
+			avatar = request.build_absolute_uri(avatar)
+		return {'id': obj.user_id, 'name': obj.user.name, 'avatar': avatar}
+
+	def get_member_count(self, obj):
+		return obj.members.count()
 
 
 class GoalJoinRequestSerializer(serializers.Serializer):
@@ -300,12 +362,15 @@ class GoalShareResponseSerializer(serializers.Serializer):
 	detail = serializers.CharField()
 	goal_id = serializers.IntegerField()
 	direct_link = serializers.URLField()
+	public_share_link = serializers.URLField()
+	share_link = serializers.URLField()
+	invite_link = serializers.URLField()
 	added_user_ids = serializers.ListField(child=serializers.IntegerField())
 	invited_emails = serializers.ListField(child=serializers.EmailField())
 
 
 class BuddyProfileResponseSerializer(serializers.Serializer):
-	user = UserSerializer(read_only=True)
+	user = PublicUserSerializer(read_only=True)
 	profile = ProfileSerializer(read_only=True)
 
 
@@ -322,6 +387,7 @@ class PartnershipSerializer(serializers.ModelSerializer):
 			'created_at',
 			'updated_at',
 		]
+		read_only_fields = fields
 
 
 class MatchSerializer(serializers.ModelSerializer):
@@ -336,6 +402,15 @@ class MatchSerializer(serializers.ModelSerializer):
 			'updated_at',
 		]
 		read_only_fields = ['from_user']
+		validators = []
+
+	def create(self, validated_data):
+		match, _ = Match.objects.update_or_create(
+			from_user=validated_data['from_user'],
+			to_user=validated_data['to_user'],
+			defaults={'action': validated_data['action']},
+		)
+		return match
 
 
 class TaskSerializer(serializers.ModelSerializer):
@@ -368,10 +443,12 @@ class SubTaskSerializer(serializers.ModelSerializer):
 			'owner',
 			'title',
 			'description',
+			'due_at',
 			'status',
 			'created_at',
 			'updated_at',
 		]
+		read_only_fields = ['owner']
 
 
 class TimerSessionSerializer(serializers.ModelSerializer):
@@ -409,7 +486,7 @@ class EvidenceSerializer(serializers.ModelSerializer):
 			'created_at',
 			'updated_at',
 		]
-		read_only_fields = ['submitted_by', 'submitted_at', 'reviewed_at']
+		read_only_fields = ['submitted_by', 'submitted_at', 'reviewed_at', 'approved', 'reviewer']
 
 
 class NotificationSerializer(serializers.ModelSerializer):
@@ -428,16 +505,22 @@ class NotificationSerializer(serializers.ModelSerializer):
 
 
 class MessageReplySerializer(serializers.ModelSerializer):
-	sender = UserSerializer(read_only=True)
+	sender = PublicUserSerializer(read_only=True)
 
 	class Meta:
 		model = Message
-		fields = ['id', 'sender', 'text', 'attachment', 'attachment_name', 'created_at']
+		fields = ['id', 'sender', 'text', 'attachment', 'attachment_name', 'recalled_at', 'created_at']
 		read_only_fields = fields
+
+	def to_representation(self, instance):
+		data = super().to_representation(instance)
+		if instance.recalled_at:
+			data.update({'text': '', 'attachment': None, 'attachment_name': ''})
+		return data
 
 
 class MessageSerializer(serializers.ModelSerializer):
-	sender = UserSerializer(read_only=True)
+	sender = PublicUserSerializer(read_only=True)
 	reply_to = serializers.SerializerMethodField()
 	reply_to_message_id = serializers.PrimaryKeyRelatedField(
 		queryset=Message.objects.all(),
@@ -446,6 +529,8 @@ class MessageSerializer(serializers.ModelSerializer):
 		write_only=True,
 		source='reply_to_message',
 	)
+	can_recall = serializers.SerializerMethodField()
+	is_recalled = serializers.SerializerMethodField()
 
 	class Meta:
 		model = Message
@@ -462,10 +547,44 @@ class MessageSerializer(serializers.ModelSerializer):
 			'attachment_mime',
 			'attachment_size',
 			'is_read',
+			'kind',
+			'metadata',
+			'recalled_at',
+			'is_recalled',
+			'can_recall',
 			'created_at',
 			'updated_at',
 		]
-		read_only_fields = ['sender', 'is_read', 'attachment', 'attachment_name', 'attachment_mime', 'attachment_size', 'is_a_reply', 'reply_to']
+		read_only_fields = ['sender', 'is_read', 'attachment', 'attachment_name', 'attachment_mime', 'attachment_size', 'is_a_reply', 'reply_to', 'kind', 'metadata', 'recalled_at', 'is_recalled', 'can_recall']
+
+	def to_representation(self, instance):
+		data = super().to_representation(instance)
+		if instance.recalled_at:
+			data.update({
+				'text': '',
+				'attachment': None,
+				'attachment_name': '',
+				'attachment_mime': '',
+				'attachment_size': None,
+			})
+		return data
+
+	@extend_schema_field(serializers.BooleanField())
+	def get_is_recalled(self, obj):
+		return bool(obj.recalled_at)
+
+	@extend_schema_field(serializers.BooleanField())
+	def get_can_recall(self, obj):
+		request = self.context.get('request')
+		user = getattr(request, 'user', None)
+		window = int(getattr(settings, 'MESSAGE_RECALL_WINDOW_MINUTES', 15))
+		return bool(
+			user and getattr(user, 'is_authenticated', False)
+			and obj.sender_id == user.id
+			and obj.kind == Message.KIND_USER
+			and not obj.recalled_at
+			and obj.created_at >= timezone.now() - timedelta(minutes=window)
+		)
 
 	@extend_schema_field(MessageReplySerializer)
 	def get_reply_to(self, obj):
@@ -488,7 +607,7 @@ class MessageSerializer(serializers.ModelSerializer):
 
 
 class ConversationMemberSerializer(serializers.ModelSerializer):
-	user = UserSerializer(read_only=True)
+	user = PublicUserSerializer(read_only=True)
 
 	class Meta:
 		model = ConversationMembership
@@ -534,7 +653,9 @@ class ConversationSerializer(serializers.ModelSerializer):
 	goal = serializers.PrimaryKeyRelatedField(read_only=True)
 	name = serializers.CharField(read_only=True)
 	is_group = serializers.BooleanField(read_only=True)
-	members = UserSerializer(many=True, read_only=True)
+	members = PublicUserSerializer(many=True, read_only=True)
+	archived_at = serializers.SerializerMethodField()
+	is_archived = serializers.SerializerMethodField()
 
 	class Meta:
 		model = Conversation
@@ -547,6 +668,8 @@ class ConversationSerializer(serializers.ModelSerializer):
 			'members',
 			'last_message',
 			'unread_count',
+			'archived_at',
+			'is_archived',
 			'created_at',
 			'updated_at',
 		]
@@ -567,6 +690,87 @@ class ConversationSerializer(serializers.ModelSerializer):
 		if not user or not getattr(user, 'is_authenticated', False):
 			return 0
 		return obj.messages.filter(is_read=False).exclude(sender=user).count()
+
+	def _membership(self, obj):
+		request = self.context.get('request')
+		user = getattr(request, 'user', None)
+		if not user or not getattr(user, 'is_authenticated', False):
+			return None
+		return obj.conversation_memberships.filter(user=user).first()
+
+	@extend_schema_field(serializers.DateTimeField(allow_null=True))
+	def get_archived_at(self, obj):
+		membership = self._membership(obj)
+		return membership.archived_at if membership else None
+
+	@extend_schema_field(serializers.BooleanField())
+	def get_is_archived(self, obj):
+		return bool(self.get_archived_at(obj))
+
+
+class GoalCheckinReactionSerializer(serializers.ModelSerializer):
+	user = PublicUserSerializer(read_only=True)
+
+	class Meta:
+		model = GoalCheckinReaction
+		fields = ['id', 'user', 'reaction', 'created_at']
+		read_only_fields = ['id', 'user', 'created_at']
+
+
+class GoalCheckinSerializer(serializers.ModelSerializer):
+	user = PublicUserSerializer(read_only=True)
+	goal_title = serializers.CharField(source='goal.title', read_only=True)
+	evidence_url = serializers.SerializerMethodField()
+	reactions = GoalCheckinReactionSerializer(many=True, read_only=True)
+	has_badge = serializers.SerializerMethodField()
+
+	class Meta:
+		model = GoalCheckin
+		fields = [
+			'id', 'goal', 'goal_title', 'user', 'scheduled_for', 'status',
+			'completion_percent', 'update_text', 'blocker', 'evidence',
+			'evidence_url', 'evidence_view_once', 'evidence_expires_at',
+			'submitted_at', 'reactions', 'has_badge', 'created_at', 'updated_at',
+		]
+		read_only_fields = [
+			'user', 'evidence_url', 'evidence_expires_at', 'submitted_at',
+			'reactions', 'has_badge',
+		]
+		extra_kwargs = {'evidence': {'write_only': True, 'required': False, 'allow_null': True}}
+
+	def validate_status(self, value):
+		if value in {GoalCheckin.STATUS_PENDING, GoalCheckin.STATUS_MISSED}:
+			raise serializers.ValidationError('Submit completed, partial, or blocked as your check-in status.')
+		return value
+
+	def validate(self, attrs):
+		status_value = attrs.get('status', getattr(self.instance, 'status', None))
+		completion = attrs.get('completion_percent', getattr(self.instance, 'completion_percent', 0))
+		blocker = (attrs.get('blocker', getattr(self.instance, 'blocker', '')) or '').strip()
+		scheduled_for = attrs.get('scheduled_for', getattr(self.instance, 'scheduled_for', None))
+		if scheduled_for and scheduled_for > timezone.localdate():
+			raise serializers.ValidationError({'scheduled_for': 'You cannot submit a future check-in.'})
+		if status_value == GoalCheckin.STATUS_COMPLETED and completion != 100:
+			raise serializers.ValidationError({'completion_percent': 'Completed check-ins must be 100%.'})
+		if status_value == GoalCheckin.STATUS_BLOCKED and not blocker:
+			raise serializers.ValidationError({'blocker': 'Describe what is blocking you.'})
+		return attrs
+
+	@extend_schema_field(serializers.URLField(allow_null=True))
+	def get_evidence_url(self, obj):
+		if not obj.evidence:
+			return None
+		request = self.context.get('request')
+		path = f'/api-v1/checkins/{obj.id}/evidence/'
+		return request.build_absolute_uri(path) if request else path
+
+	@extend_schema_field(serializers.BooleanField())
+	def get_has_badge(self, obj):
+		return GoalCheckinBadge.objects.filter(goal=obj.goal, scheduled_for=obj.scheduled_for).exists()
+
+
+class GoalCheckinReactionRequestSerializer(serializers.Serializer):
+	reaction = serializers.ChoiceField(choices=GoalCheckinReaction.REACTION_CHOICES)
 
 
 class WaitlisterSerializer(serializers.ModelSerializer):
@@ -592,8 +796,8 @@ class WaitlisterSerializer(serializers.ModelSerializer):
 
 
 class EventxSerializer(serializers.ModelSerializer):
-	creator = UserSerializer(read_only=True)
-	participants = UserSerializer(read_only=True, many=True)
+	creator = PublicUserSerializer(read_only=True)
+	participants = PublicUserSerializer(read_only=True, many=True)
 	participants_ids = serializers.PrimaryKeyRelatedField(
 		queryset=User.objects.all(),
 		many=True,
@@ -631,11 +835,9 @@ class BuddyFinderProfileSerializer(ProfileSerializer):
 	"""
 	connection_status = serializers.SerializerMethodField()
 	buddy_request_id = serializers.SerializerMethodField()
-	compatibility_score = serializers.SerializerMethodField()
-	rating = serializers.SerializerMethodField()
 
 	class Meta(ProfileSerializer.Meta):
-		fields = ProfileSerializer.Meta.fields + ['connection_status', 'buddy_request_id', 'compatibility_score', 'rating']
+		fields = ProfileSerializer.Meta.fields + ['connection_status', 'buddy_request_id']
 
 	@extend_schema_field(serializers.CharField())
 	def get_connection_status(self, obj):
@@ -647,27 +849,14 @@ class BuddyFinderProfileSerializer(ProfileSerializer):
 		pending_request_id_by_to_user_id = self.context.get('pending_request_id_by_to_user_id', {})
 		return pending_request_id_by_to_user_id.get(obj.user_id)
 	
-	@extend_schema_field(serializers.IntegerField(allow_null=True))
-	def get_compatibility_score(self, obj):
-		import random
-		score = random.randint(50, 90)  # Placeholder: replace with real compatibility logic
-		return score
-	
-	@extend_schema_field(serializers.FloatField(allow_null=True))
-	def get_rating(self, obj):
-		import random
-		rating = round(random.uniform(3.0, 5.0), 1)  # Placeholder: replace with real rating logic
-		return rating
-
-
 class BuddyConnectSerializer(serializers.Serializer):
 	to_user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
 	message = serializers.CharField(required=False, allow_blank=True, max_length=2000)
 
 
 class BuddyRequestSerializer(serializers.ModelSerializer):
-	from_user = UserSerializer(read_only=True)
-	to_user = UserSerializer(read_only=True)
+	from_user = PublicUserSerializer(read_only=True)
+	to_user = PublicUserSerializer(read_only=True)
 
 	class Meta:
 		model = BuddyRequest
@@ -686,7 +875,7 @@ class BuddyRequestSerializer(serializers.ModelSerializer):
 
 class BuddyConnectionSerializer(serializers.Serializer):
 	"""Represents a buddy connection as the other user's profile."""
-	user = UserSerializer(read_only=True)
+	user = PublicUserSerializer(read_only=True)
 	profile = ProfileSerializer(read_only=True)
 
 

@@ -4,16 +4,18 @@ from django.contrib.auth.hashers import check_password, make_password
 from django.db import IntegrityError
 from django.db import models
 from django.db import transaction
+from django.http import FileResponse
 import secrets
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from knox.models import AuthToken
-from rest_framework import permissions, status, viewsets
+from rest_framework import mixins, permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, MultiPartParser
 from drf_spectacular.utils import OpenApiParameter, OpenApiTypes, extend_schema
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 
 from datetime import timedelta, datetime
 from django.utils import timezone
@@ -25,7 +27,8 @@ from padluppcore.utils.email import EmailSendError, send_mailgun_email
 from .activity import dt_to_local_date, get_user_tzinfo, record_user_activity
 
 from accounts.models import AccountDeletionRequest, PasswordResetOTP, User
-from .models import BuddyRequest, Conversation, ConversationMembership, Evidence, Event, Goal, GoalMembership, Match, Message, Notification, Partnership, Profile, SubTask, Task, TimerSession, UserDailyActivity, Waitlister
+from .models import BuddyRequest, Conversation, ConversationMembership, Evidence, Event, Goal, GoalCheckin, GoalCheckinBadge, GoalCheckinEvidenceView, GoalCheckinReaction, GoalMembership, Match, Message, Notification, Partnership, Profile, SubTask, Task, TimerSession, UserDailyActivity, Waitlister
+from .matching import compatibility_details, profile_is_complete
 from .serializers import (
 	BuddyConnectSerializer,
 	BuddyFinderProfileSerializer,
@@ -42,14 +45,18 @@ from .serializers import (
 	EvidenceSerializer,
 	EventxSerializer,
 	GoalSerializer,
+	GoalCheckinReactionRequestSerializer,
+	GoalCheckinSerializer,
 	GoalJoinRequestSerializer,
 	GoalJoinResponseSerializer,
 	GoalShareRequestSerializer,
 	GoalShareResponseSerializer,
+	PublicGoalPreviewSerializer,
 	MatchSerializer,
 	NotificationSerializer,
 	PartnershipSerializer,
 	ProfileSerializer,
+	PublicUserSerializer,
 	SubTaskSerializer,
 	TaskSerializer,
 	TimerSessionSerializer,
@@ -91,7 +98,7 @@ def _goal_direct_link(goal_id: int) -> str:
 
 
 def _goal_invite_link(shared_id) -> str:
-	return f'{_app_base_url()}/goals/?shared_id={shared_id}'
+	return f'{_app_base_url()}/goals'
 
 
 def _user_is_member_of_conversation(user_id: int, conversation: Conversation) -> bool:
@@ -137,6 +144,27 @@ def _add_conversation_member(conversation: Conversation, user: User, added_by: U
 		membership.added_by = added_by
 		membership.save(update_fields=['added_by', 'updated_at'])
 	return created
+
+
+def _ensure_goal_conversation(goal: Goal, added_by: User | None = None) -> Conversation:
+	conversation, _ = Conversation.objects.get_or_create(
+		goal=goal,
+		defaults={'is_group': True, 'name': goal.title},
+	)
+	changed_fields = []
+	if not conversation.is_group:
+		conversation.is_group = True
+		changed_fields.append('is_group')
+	if not (conversation.name or '').strip():
+		conversation.name = goal.title
+		changed_fields.append('name')
+	if changed_fields:
+		conversation.save(update_fields=[*changed_fields, 'updated_at'])
+	for member_id in _goal_member_ids(goal):
+		member = User.objects.filter(id=member_id, is_active=True, deleted=False).first()
+		if member:
+			_add_conversation_member(conversation, member, added_by)
+	return conversation
 
 
 def _normalize_email(email: str | None) -> str:
@@ -210,15 +238,9 @@ class BuddyViewSet(viewsets.ViewSet):
 	)
 	@action(detail=False, methods=['get'], url_path='finder')
 	def finder(self, request):
-		"""List profiles that have similar experiences to the current user.
-
-		- Excludes existing buddy connections.
-		- Includes profiles with pending outgoing buddy requests.
-		- Adds `connection_status` = pending|none.
-		"""
+		"""List eligible profiles ordered by stable compatibility score."""
 		user = request.user
-		# get experience as query param
-		category = request.query_params.get('category') or request.data.get('category') or ''.strip()
+		category = (request.query_params.get('category') or '').strip().casefold()
 		profile, _ = Profile.objects.get_or_create(user=user)
 		buddy_user_ids = self._buddy_user_ids(user)
 
@@ -232,48 +254,59 @@ class BuddyViewSet(viewsets.ViewSet):
 			for row in pending_requests.values('id', 'to_user_id')
 		}
 
-		excluded_user_ids = set(buddy_user_ids) | {user.id}
+		# Likes and passes cool down after 30 days. This prevents immediate repeats
+		# without making a person permanently undiscoverable.
+		recently_swiped_ids = Match.objects.filter(
+			from_user=user,
+			created_at__gte=timezone.now() - timedelta(days=30),
+		).values_list('to_user_id', flat=True)
+		excluded_user_ids = set(buddy_user_ids) | set(recently_swiped_ids) | {user.id}
 
-		# crude similarity: match on keywords from the user's experience
-		experience_text = (profile.experience).strip()
+		qs = (
+			Profile.objects.select_related('user')
+			.filter(user__is_active=True, user__deleted=False)
+			.exclude(user_id__in=excluded_user_ids)
+		)
+		profiles = list(qs)
 		if category:
-			experience_text = category.strip()
-		keywords = [w.strip(' ,.;:!"\'()[]{}').lower() for w in experience_text.split()]
-		keywords = [w for w in keywords if len(w) >= 4]
-		keywords = list(dict.fromkeys(keywords))[:6]
-
-		similarity_q = models.Q()
-		for word in keywords:
-			similarity_q |= models.Q(experience__icontains=word)
-
-		qs = Profile.objects.exclude(user_id__in=excluded_user_ids)
-		if similarity_q:
-			qs = qs.filter(similarity_q | models.Q(user_id__in=pending_to_user_ids))
-		else:
-			# If no experience yet, only show pending requests (if any)
-			qs = qs.filter(user_id__in=pending_to_user_ids)
-
-		qs = qs.distinct()
-		# Pilot fallback: if we found nobody, return a small random sample so the UI
-		# doesn't keep showing an empty list.
-		if not qs.exists():
-			qs = Profile.objects.exclude(user_id__in=excluded_user_ids).order_by('?')[:10]
-		else:
-			qs = qs.order_by('-created_at')
-		page = None
-		if hasattr(self, 'paginate_queryset'):
-			page = self.paginate_queryset(qs)
+			profiles = [
+				candidate for candidate in profiles
+				if category in ' '.join([
+					candidate.experience or '',
+					candidate.interests or '',
+					' '.join(candidate.focus_areas or []),
+				]).casefold()
+				or candidate.user_id in pending_to_user_ids
+			]
+		if any([
+			(profile.experience or '').strip(),
+			(profile.interests or '').strip(),
+			profile.focus_areas,
+			profile.availability,
+			profile.communication_styles,
+		]):
+			profiles = [
+				candidate for candidate in profiles
+				if compatibility_details(profile, candidate)['score'] > 0
+				or candidate.user_id in pending_to_user_ids
+			]
+		profiles.sort(
+			key=lambda candidate: (
+				-compatibility_details(profile, candidate)['score'],
+				-candidate.created_at.timestamp(),
+				candidate.user_id,
+			)
+		)
 		serializer = BuddyFinderProfileSerializer(
-			page or qs,
+			profiles,
 			many=True,
 			context={
 				'request': request,
+				'source_profile': profile,
 				'pending_to_user_ids': pending_to_user_ids,
 				'pending_request_id_by_to_user_id': pending_request_id_by_to_user_id,
 			},
 		)
-		if page is not None:
-			return self.get_paginated_response(serializer.data)
 		return Response(serializer.data)
 
 
@@ -319,9 +352,9 @@ class BuddyViewSet(viewsets.ViewSet):
 
 		# Best-effort email notification to recipient.
 		to_email = (getattr(to_user, 'preferred_notification_email', None) or getattr(to_user, 'email', '') or '').strip()
-		if to_email:
+		if to_user.notify_on_new_match and settings.EMAIL_NOTIFICATIONS_ENABLED and to_email:
 			from_name = (getattr(from_user, 'name', '') or '').strip() or 'Someone'
-			platform_url = 'https://app.padlupp.com'
+			platform_url = _app_base_url()
 			subject = 'New connection request on Padlupp'
 			text = f"{from_name} sent you a connection request on Padlupp.\n\n"
 			if message:
@@ -393,11 +426,12 @@ class BuddyViewSet(viewsets.ViewSet):
 		self._broadcast_conversation_update(conversation_id=conversation.id, user_ids=[user_a.id, user_b.id])
 
 		# Notify requester that their connection request was accepted.
-		Notification.objects.create(
-			user=buddy_request.from_user,
-			type='buddy_request_accepted',
-			payload={'partner_id': buddy_request.to_user_id, 'partnership_id': partnership.id},
-		)
+		if buddy_request.from_user.notify_on_new_match:
+			Notification.objects.create(
+				user=buddy_request.from_user,
+				type='buddy_request_accepted',
+				payload={'partner_id': buddy_request.to_user_id, 'partnership_id': partnership.id},
+			)
 
 		return Response({'detail': 'Accepted.', 'partnership_id': partnership.id}, status=status.HTTP_200_OK)
 
@@ -608,6 +642,12 @@ class EventViewSet(viewsets.ModelViewSet):
 class OnboardingViewSet(viewsets.ViewSet):
 	permission_classes = [permissions.AllowAny]
 
+	def get_throttles(self):
+		if self.action == 'register':
+			self.throttle_scope = 'registration'
+			return [ScopedRateThrottle()]
+		return super().get_throttles()
+
 	from .serializers import RegisterRequestSerializer, RegisterResponseSerializer
 
 	@extend_schema(
@@ -755,6 +795,8 @@ class OnboardingViewSet(viewsets.ViewSet):
 
 class AuthViewSet(viewsets.ViewSet):
 	permission_classes = [permissions.AllowAny]
+	throttle_classes = [ScopedRateThrottle]
+	throttle_scope = 'auth'
 
 	def _verify_google_id_token(self, token: str) -> dict:
 		client_id = getattr(settings, 'GOOGLE_OAUTH2_CLIENT_ID', '')
@@ -908,6 +950,7 @@ class AuthViewSet(viewsets.ViewSet):
 		user = match.user
 		user.set_password(new_password)
 		user.save(update_fields=['password', 'updated_at'])
+		AuthToken.objects.filter(user=user).delete()
 		match.reset_token_used_at = now
 		match.save(update_fields=['reset_token_used_at', 'updated_at'])
 
@@ -1242,6 +1285,7 @@ class AuthViewSet(viewsets.ViewSet):
 		# temporarily deactivate the account immediately to prevent further use while we process the deletion request
 		request.user.is_active = False
 		request.user.save(update_fields=['is_active'])
+		AuthToken.objects.filter(user=request.user).delete()
 		return Response({'detail': 'Deletion request received.'}, status=status.HTTP_201_CREATED)
 
 
@@ -1249,6 +1293,9 @@ class AuthViewSet(viewsets.ViewSet):
 class GoalViewSet(viewsets.ModelViewSet):
 	serializer_class = GoalSerializer
 	permission_classes = [permissions.IsAuthenticated]
+	search_fields = ['title', 'description', 'category']
+	ordering_fields = ['title', 'created_at', 'target_date']
+	ordering = ['-created_at']
 
 	def get_queryset(self):
 		user = self.request.user
@@ -1261,7 +1308,6 @@ class GoalViewSet(viewsets.ModelViewSet):
 			models.Q(partnership__user_b=user)
 			)
 			.distinct()
-			.order_by('-created_at')
 		)
 
 
@@ -1269,27 +1315,57 @@ class GoalViewSet(viewsets.ModelViewSet):
 		conversation = serializer.validated_data.pop('conversation', None)
 		partnership = None
 		if conversation:
+			if not _user_is_member_of_conversation(self.request.user.id, conversation):
+				raise PermissionDenied('You are not a member of this conversation.')
 			partnership = getattr(conversation, 'partnership', None)
+		profile, _ = Profile.objects.get_or_create(user=self.request.user)
+		if not profile_is_complete(profile):
+			raise ValidationError({
+				'profile': 'Complete onboarding by adding your experience and at least one interest before creating a goal.',
+			})
 		goal = serializer.save(user=self.request.user, partnership=partnership)
 		_add_goal_member(goal, self.request.user, self.request.user)
 		if partnership:
 			_add_goal_member(goal, partnership.user_a, self.request.user)
 			_add_goal_member(goal, partnership.user_b, self.request.user)
 		goal.refresh_from_db()
+		if goal.is_public:
+			_ensure_goal_conversation(goal, self.request.user)
 
 	def perform_update(self, serializer):
-		# Only allow update if user is owner or in the partnership
+		# Every active goal member may collaborate on goal details.
 		goal = self.get_object()
 		user = self.request.user
-		if goal.user == user or (
-			goal.partnership and (goal.partnership.user_a == user or goal.partnership.user_b == user)
-		):
+		if user.id in _goal_member_ids(goal):
+			requested_visibility = serializer.validated_data.get('is_public', goal.is_public)
+			if goal.user_id != user.id and requested_visibility != goal.is_public:
+				raise PermissionDenied('Only the goal owner can change sharing visibility.')
 			goal = serializer.save()
 			if goal.partnership:
 				_add_goal_member(goal, goal.partnership.user_a, user)
 				_add_goal_member(goal, goal.partnership.user_b, user)
 		else:
 			raise PermissionDenied("You do not have permission to update this goal.")
+
+	def perform_destroy(self, instance):
+		if instance.user_id != self.request.user.id:
+			raise PermissionDenied('Only the goal owner can delete this goal.')
+		instance.delete()
+
+	@extend_schema(
+		responses={200: PublicGoalPreviewSerializer, 403: DetailResponseSerializer, 404: DetailResponseSerializer},
+		description='Public, privacy-limited preview of a shared goal.',
+	)
+	@action(detail=True, methods=['get'], url_path='public-preview', permission_classes=[permissions.AllowAny])
+	def public_preview(self, request, pk=None):
+		share_serializer = GoalJoinRequestSerializer(data={'shared_id': request.query_params.get('shared_id')})
+		if not share_serializer.is_valid():
+			return Response({'detail': 'Goal not found or the share link is invalid.'}, status=status.HTTP_404_NOT_FOUND)
+		shared_id = share_serializer.validated_data['shared_id']
+		goal = Goal.objects.select_related('user').filter(pk=pk, is_public=True, shared_id=shared_id).first()
+		if not goal:
+			return Response({'detail': 'Goal not found or the share link is invalid.'}, status=status.HTTP_404_NOT_FOUND)
+		return Response(PublicGoalPreviewSerializer(goal, context={'request': request}).data)
 
 	@extend_schema(
 		request=GoalJoinRequestSerializer,
@@ -1310,13 +1386,14 @@ class GoalViewSet(viewsets.ModelViewSet):
 		created = _add_goal_member(goal, request.user, request.user)
 		goal.is_shared = True
 		goal.save(update_fields=['is_shared', 'updated_at'])
+		_ensure_goal_conversation(goal, request.user)
 
 		# Notify the goal owner (best-effort). Only send if this request actually
 		# created a new membership row to avoid duplicate emails.
 		if created and _email_notifications_enabled():
 			owner = getattr(goal, 'user', None)
 			joiner = request.user
-			if owner and owner.email and owner.id != joiner.id:
+			if owner and owner.email and owner.id != joiner.id and owner.notify_on_new_match:
 				joiner_name = (getattr(joiner, 'name', '') or getattr(joiner, 'email', '') or 'Someone').strip()
 				owner_name = (getattr(owner, 'name', '') or 'there').strip()
 				goal_title = (getattr(goal, 'title', '') or 'your goal').strip()
@@ -1355,7 +1432,7 @@ class GoalViewSet(viewsets.ModelViewSet):
 	@action(detail=True, methods=['post'], url_path='share')
 	def share(self, request, pk=None):
 		goal = self.get_object()
-		if goal.user_id != request.user.id and not (goal.partnership and request.user.id in [goal.partnership.user_a_id, goal.partnership.user_b_id]):
+		if goal.user_id != request.user.id:
 			return Response({'detail': 'You do not have permission to share this goal.'}, status=status.HTTP_403_FORBIDDEN)
 
 		serializer = GoalShareRequestSerializer(data=request.data)
@@ -1364,7 +1441,11 @@ class GoalViewSet(viewsets.ModelViewSet):
 		message = (serializer.validated_data.get('message') or '').strip()
 		added_user_ids: list[int] = []
 		invited_emails: list[str] = []
-		goal_url = _goal_direct_link(goal.id)
+		if not goal.is_public:
+			goal.is_public = True
+			goal.save(update_fields=['is_public', 'shared_id', 'invite_link', 'updated_at'])
+		goal_url = goal.invite_link
+		_ensure_goal_conversation(goal, request.user)
 		inviter_name = (getattr(request.user, 'name', '') or getattr(request.user, 'email', '') or 'Someone').strip()
 
 		for email in emails:
@@ -1375,18 +1456,19 @@ class GoalViewSet(viewsets.ModelViewSet):
 				created = _add_goal_member(goal, user, request.user)
 				if created:
 					added_user_ids.append(user.id)
-					Notification.objects.create(
-						user=user,
-						type='goal_shared',
-						payload={
+					if user.notify_on_new_match:
+						Notification.objects.create(
+							user=user,
+							type='goal_shared',
+							payload={
 							'goal_id': goal.id,
 							'goal_title': goal.title,
 							'from_user_id': request.user.id,
 							'from_user_name': inviter_name,
 							'link': goal_url,
 							'message': message,
-						},
-					)
+							},
+						)
 					subject = f'{inviter_name} added you to a goal on Padlupp'
 					text = (
 						f'Hi {getattr(user, "name", "there") or "there"},\n\n'
@@ -1396,12 +1478,13 @@ class GoalViewSet(viewsets.ModelViewSet):
 						text += f'Message: {message}\n\n'
 					text += f'Open the goal: {goal_url}\n'
 					try:
-						send_mailgun_email(
-							to_email=user.email,
-							subject=subject,
-							text=text,
-							tags=['goal_share', 'existing_user'],
-						)
+						if user.notify_on_new_match and _email_notifications_enabled():
+							send_mailgun_email(
+								to_email=user.email,
+								subject=subject,
+								text=text,
+								tags=['goal_share', 'existing_user'],
+							)
 					except EmailSendError:
 						pass
 				continue
@@ -1414,14 +1497,15 @@ class GoalViewSet(viewsets.ModelViewSet):
 			)
 			if message:
 				text += f'Message: {message}\n\n'
-			text += f'Join Padlupp to view the goal: {_app_base_url()}\n'
+			text += f'Join Padlupp to view the goal: {goal_url}\n'
 			try:
-				send_mailgun_email(
-					to_email=email,
-					subject=subject,
-					text=text,
-					tags=['goal_share', 'invite'],
-				)
+				if _email_notifications_enabled():
+					send_mailgun_email(
+						to_email=email,
+						subject=subject,
+						text=text,
+						tags=['goal_share', 'invite'],
+					)
 			except EmailSendError:
 				pass
 
@@ -1432,6 +1516,9 @@ class GoalViewSet(viewsets.ModelViewSet):
 				'detail': 'Goal shared.',
 				'goal_id': goal.id,
 				'direct_link': goal_url,
+				'public_share_link': goal_url,
+				'share_link': goal_url,
+				'invite_link': goal_url,
 				'added_user_ids': added_user_ids,
 				'invited_emails': invited_emails,
 			},
@@ -1439,7 +1526,7 @@ class GoalViewSet(viewsets.ModelViewSet):
 		)
 
 	@extend_schema(
-		responses={200: UserSerializer(many=True), 403: DetailResponseSerializer, 404: DetailResponseSerializer},
+		responses={200: PublicUserSerializer(many=True), 403: DetailResponseSerializer, 404: DetailResponseSerializer},
 		description='Return the list of all members in this goal. Only goal members can access this endpoint.',
 	)
 	@action(detail=True, methods=['get'], url_path='members')
@@ -1454,7 +1541,7 @@ class GoalViewSet(viewsets.ModelViewSet):
 		users = list(User.objects.filter(id__in=ordered_ids, deleted=False))
 		user_by_id = {u.id: u for u in users}
 		ordered_users = [user_by_id[uid] for uid in ordered_ids if uid in user_by_id]
-		return Response(UserSerializer(ordered_users, many=True, context={'request': request}).data, status=status.HTTP_200_OK)
+		return Response(PublicUserSerializer(ordered_users, many=True, context={'request': request}).data, status=status.HTTP_200_OK)
 
 	@extend_schema(
 		parameters=[
@@ -1497,7 +1584,7 @@ class GoalViewSet(viewsets.ModelViewSet):
 		return Response({'detail': 'Member removed.'}, status=status.HTTP_200_OK)
 
 
-class PartnershipViewSet(viewsets.ModelViewSet):
+class PartnershipViewSet(viewsets.ReadOnlyModelViewSet):
 	serializer_class = PartnershipSerializer
 	permission_classes = [permissions.IsAuthenticated]
 
@@ -1521,9 +1608,13 @@ class MatchViewSet(viewsets.ModelViewSet):
 	@action(detail=False, methods=['get'])
 	def discover(self, request):
 		user = request.user
+		source_profile, _ = Profile.objects.get_or_create(user=user)
 
-		# Exclude users already matched with (like/pass) or self
-		swiped_user_ids = Match.objects.filter(from_user=user).values_list('to_user_id', flat=True)
+		# Reconsider old swipes after a cooldown, but never suggest an existing buddy.
+		swiped_user_ids = Match.objects.filter(
+			from_user=user,
+			created_at__gte=timezone.now() - timedelta(days=30),
+		).values_list('to_user_id', flat=True)
 		partner_user_ids = Partnership.objects.filter(
 			models.Q(user_a=user) | models.Q(user_b=user)
 		).values_list('user_a_id', 'user_b_id')
@@ -1531,11 +1622,25 @@ class MatchViewSet(viewsets.ModelViewSet):
 
 		excluded_ids = set(swiped_user_ids) | partner_user_ids_flat | {user.id}
 
-		profiles = Profile.objects.exclude(user_id__in=excluded_ids)
-		# TODO: later filter by goals, focus areas, time zone, etc.
+		profiles = list(
+			Profile.objects.select_related('user')
+			.filter(user__is_active=True, user__deleted=False)
+			.exclude(user_id__in=excluded_ids)
+		)
+		profiles.sort(
+			key=lambda candidate: (
+				-compatibility_details(source_profile, candidate)['score'],
+				-candidate.created_at.timestamp(),
+				candidate.user_id,
+			)
+		)
 
 		page = self.paginate_queryset(profiles)
-		serializer = ProfileSerializer(page or profiles, many=True, context={'request': request})
+		serializer = ProfileSerializer(
+			page if page is not None else profiles,
+			many=True,
+			context={'request': request, 'source_profile': source_profile},
+		)
 		if page is not None:
 			return self.get_paginated_response(serializer.data)
 		return Response(serializer.data)
@@ -1590,6 +1695,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 				| models.Q(partnership__user_a=user)
 				| models.Q(partnership__user_b=user)
 				| models.Q(goal__user=user)
+				| models.Q(goal__members=user)
 				| models.Q(goal__partnership__user_a=user)
 				| models.Q(goal__partnership__user_b=user)
 			)
@@ -1612,7 +1718,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 			goal_partnership
 			and user.id in [goal_partnership.user_a_id, goal_partnership.user_b_id]
 		)
-		if goal.user_id != user.id and not in_goal_partnership:
+		if user.id not in _goal_member_ids(goal) and not in_goal_partnership:
 			raise ValidationError({'goal': 'You do not have access to this goal.'})
 
 		# Validate any explicit partnership, and default to goal.partnership when present.
@@ -1626,18 +1732,19 @@ class TaskViewSet(viewsets.ModelViewSet):
 		# Notify partner (if any) about new task
 		if task.partnership:
 			partner = task.partnership.user_a if task.partnership.user_b == user else task.partnership.user_b
-			Notification.objects.create(
-				user=partner,
-				type='new_task',
-				payload={'task_id': task.id, 'title': task.title},
-			)
+			if partner.notify_on_reminders:
+				Notification.objects.create(
+					user=partner,
+					type='new_task',
+					payload={'task_id': task.id, 'title': task.title},
+				)
 
 	def perform_update(self, serializer):
-		# self._assert_task_owner(self.get_object())
+		self._assert_task_owner(serializer.instance)
 		serializer.save()
 
 	def perform_destroy(self, instance):
-		# self._assert_task_owner(instance)
+		self._assert_task_owner(instance)
 		instance.delete()
 
 	@extend_schema(
@@ -1647,8 +1754,9 @@ class TaskViewSet(viewsets.ModelViewSet):
 	@action(detail=True, methods=['post'])
 	def start_timer(self, request, pk=None):
 		task = self.get_object()
+		self._assert_task_owner(task)
 		# End any existing open timer session for this user on this task
-		TimerSession.objects.filter(task=task, user=request.user, ended_at__isnull=True).update(ended_at=models.F('created_at'))
+		TimerSession.objects.filter(task=task, user=request.user, ended_at__isnull=True).update(ended_at=timezone.now())
 		session = TimerSession.objects.create(task=task, user=request.user, started_at=models.functions.Now())
 		if task.status == Task.STATUS_PLANNED:
 			task.status = Task.STATUS_IN_PROGRESS
@@ -1662,6 +1770,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 	@action(detail=True, methods=['post'])
 	def stop_timer(self, request, pk=None):
 		task = self.get_object()
+		self._assert_task_owner(task)
 		session = TimerSession.objects.filter(task=task, user=request.user, ended_at__isnull=True).order_by('-started_at').first()
 		if not session:
 			return Response({'detail': 'No active timer session.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1676,6 +1785,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 	@action(detail=True, methods=['post'])
 	def request_review(self, request, pk=None):
 		task = self.get_object()
+		self._assert_task_owner(task)
 		if task.status not in [Task.STATUS_IN_PROGRESS, Task.STATUS_NEEDS_REVISION]:
 			return Response({'detail': 'Task must be in progress or needs revision to request review.'}, status=status.HTTP_400_BAD_REQUEST)
 		task.status = Task.STATUS_PENDING_REVIEW
@@ -1683,11 +1793,12 @@ class TaskViewSet(viewsets.ModelViewSet):
 		# Notify partner that review is requested
 		if task.partnership:
 			partner = task.partnership.user_a if task.partnership.user_b == request.user else task.partnership.user_b
-			Notification.objects.create(
-				user=partner,
-				type='review_requested',
-				payload={'task_id': task.id, 'title': task.title},
-			)
+			if partner.notify_on_reminders:
+				Notification.objects.create(
+					user=partner,
+					type='review_requested',
+					payload={'task_id': task.id, 'title': task.title},
+				)
 		return Response(TaskSerializer(task).data)
 
 	@extend_schema(
@@ -1697,6 +1808,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 	@action(detail=True, methods=['post'])
 	def mark_not_completed(self, request, pk=None):
 		task = self.get_object()
+		self._assert_task_owner(task)
 		task.status = Task.STATUS_NOT_COMPLETED
 		task.save(update_fields=['status', 'updated_at'])
 		return Response(TaskSerializer(task).data)
@@ -1729,11 +1841,12 @@ class TaskViewSet(viewsets.ModelViewSet):
 			evidence.save(update_fields=['approved', 'reviewer', 'reviewed_at'])
 
 		# Notify task owner
-		Notification.objects.create(
-			user=task.owner,
-			type='task_approved',
-			payload={'task_id': task.id},
-		)
+		if task.owner.notify_on_reminders:
+			Notification.objects.create(
+				user=task.owner,
+				type='task_approved',
+				payload={'task_id': task.id},
+			)
 		return Response(TaskSerializer(task).data)
 
 	@extend_schema(
@@ -1766,11 +1879,12 @@ class TaskViewSet(viewsets.ModelViewSet):
 			evidence.save(update_fields=['approved', 'reviewer', 'reviewed_at'])
 
 		# Notify task owner with comment in payload
-		Notification.objects.create(
-			user=task.owner,
-			type='task_changes_requested',
-			payload={'task_id': task.id, 'comment': comment},
-		)
+		if task.owner.notify_on_reminders:
+			Notification.objects.create(
+				user=task.owner,
+				type='task_changes_requested',
+				payload={'task_id': task.id, 'comment': comment},
+			)
 		return Response(TaskSerializer(task).data)
 
 
@@ -1782,6 +1896,9 @@ class SubTaskViewSet(viewsets.ModelViewSet):
 		return SubTask.objects.filter(owner=self.request.user).order_by('-created_at')
 
 	def perform_create(self, serializer):
+		task = serializer.validated_data['task']
+		if task.owner_id != self.request.user.id:
+			raise PermissionDenied('Only the task owner can create subtasks.')
 		serializer.save(owner=self.request.user)
 
 
@@ -1801,16 +1918,23 @@ class EvidenceViewSet(viewsets.ModelViewSet):
 		return Evidence.objects.filter(submitted_by=self.request.user).order_by('-created_at')
 
 	def perform_create(self, serializer):
+		task = serializer.validated_data['task']
+		subtask = serializer.validated_data.get('subtask')
+		if task.owner_id != self.request.user.id:
+			raise PermissionDenied('Only the task owner can submit evidence.')
+		if subtask and subtask.task_id != task.id:
+			raise ValidationError({'subtask': 'Subtask must belong to the selected task.'})
 		evidence = serializer.save(submitted_by=self.request.user)
 		# Notify partner that evidence was submitted
 		task = evidence.task
 		if task.partnership:
 			partner = task.partnership.user_a if task.partnership.user_b == self.request.user else task.partnership.user_b
-			Notification.objects.create(
-				user=partner,
-				type='evidence_submitted',
-				payload={'task_id': task.id, 'evidence_id': evidence.id},
-			)
+			if partner.notify_on_reminders:
+				Notification.objects.create(
+					user=partner,
+					type='evidence_submitted',
+					payload={'task_id': task.id, 'evidence_id': evidence.id},
+				)
 
 
 class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
@@ -1821,7 +1945,7 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
 		user = self.request.user
 		if not getattr(user, 'is_authenticated', False):
 			return Conversation.objects.none()
-		return (
+		queryset = (
 			Conversation.objects.filter(
 				models.Q(members=user) |
 				models.Q(partnership__user_a=user) |
@@ -1830,13 +1954,50 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
 			)
 			.distinct()
 			.annotate(
+			archived_for_user=models.Exists(
+				ConversationMembership.objects.filter(
+					conversation_id=models.OuterRef('pk'),
+					user=user,
+					archived_at__isnull=False,
+				)
+			),
 			unread_count=models.Count(
 				'messages',
 				filter=models.Q(messages__is_read=False) & ~models.Q(messages__sender=user),
 			)
 			)
-			.order_by('-created_at')
 		)
+		if self.action == 'archived':
+			queryset = queryset.filter(archived_for_user=True)
+		elif self.action != 'restore':
+			queryset = queryset.filter(archived_for_user=False)
+		return queryset.distinct().order_by('-updated_at')
+
+	@action(detail=False, methods=['get'], url_path='archived')
+	def archived(self, request):
+		return Response(ConversationSerializer(self.get_queryset(), many=True, context={'request': request}).data)
+
+	@action(detail=True, methods=['post'], url_path='archive')
+	def archive(self, request, pk=None):
+		conversation = self.get_object()
+		membership, _ = ConversationMembership.objects.get_or_create(
+			conversation=conversation,
+			user=request.user,
+		)
+		membership.archived_at = timezone.now()
+		membership.save(update_fields=['archived_at', 'updated_at'])
+		return Response({'detail': 'Conversation archived.'})
+
+	@action(detail=True, methods=['post'], url_path='restore')
+	def restore(self, request, pk=None):
+		conversation = self.get_object()
+		membership, _ = ConversationMembership.objects.get_or_create(
+			conversation=conversation,
+			user=request.user,
+		)
+		membership.archived_at = None
+		membership.save(update_fields=['archived_at', 'updated_at'])
+		return Response(ConversationSerializer(conversation, context={'request': request}).data)
 
 	@extend_schema(
 		responses={200: ConversationMediaSerializer(many=True)},
@@ -1872,7 +2033,12 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
 		return Response(ConversationSerializer(conversation, context={'request': request}).data, status=status.HTTP_200_OK)
 
 
-class MessageViewSet(viewsets.ModelViewSet):
+class MessageViewSet(
+	mixins.CreateModelMixin,
+	mixins.ListModelMixin,
+	mixins.RetrieveModelMixin,
+	viewsets.GenericViewSet,
+):
 	serializer_class = MessageSerializer
 	permission_classes = [permissions.IsAuthenticated]
 
@@ -1924,6 +2090,12 @@ class MessageViewSet(viewsets.ModelViewSet):
 		last_message_payload = MessageSerializer(last_msg, context={'request': getattr(self, 'request', None)}).data if last_msg else None
 		member_names = [u.name for u in conv.members.all()] if conv.members.exists() else []
 		for uid in user_ids:
+			if ConversationMembership.objects.filter(
+				conversation_id=conversation_id,
+				user_id=uid,
+				archived_at__isnull=False,
+			).exists():
+				continue
 			unread_count = (
 				Message.objects.filter(conversation_id=conversation_id, is_read=False)
 				.exclude(sender_id=uid)
@@ -1967,8 +2139,187 @@ class MessageViewSet(viewsets.ModelViewSet):
 		self._broadcast_conversation_update(conversation_id=message.conversation_id)
 		return Response(MessageSerializer(message, context={'request': request}).data)
 
+	@extend_schema(
+		responses={200: MessageSerializer, 400: DetailResponseSerializer, 403: DetailResponseSerializer},
+		description='Recall a message sent by the current user within the configured recall window.',
+	)
+	@action(detail=True, methods=['post'], url_path='recall')
+	def recall(self, request, pk=None):
+		message = self.get_object()
+		if message.sender_id != request.user.id:
+			return Response({'detail': 'Only the sender can recall this message.'}, status=status.HTTP_403_FORBIDDEN)
+		if message.kind != Message.KIND_USER:
+			return Response({'detail': 'System messages cannot be recalled.'}, status=status.HTTP_400_BAD_REQUEST)
+		if message.recalled_at:
+			return Response(MessageSerializer(message, context={'request': request}).data)
+		window = int(getattr(settings, 'MESSAGE_RECALL_WINDOW_MINUTES', 15))
+		if message.created_at < timezone.now() - timedelta(minutes=window):
+			return Response(
+				{'detail': f'Messages can only be recalled within {window} minutes.'},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+		if message.attachment:
+			message.attachment.delete(save=False)
+		message.text = ''
+		message.attachment = None
+		message.attachment_name = ''
+		message.attachment_mime = ''
+		message.attachment_size = None
+		message.recalled_at = timezone.now()
+		message.save(update_fields=[
+			'text', 'attachment', 'attachment_name', 'attachment_mime',
+			'attachment_size', 'recalled_at', 'updated_at',
+		])
+		payload = MessageSerializer(message, context={'request': request}).data
+		channel_layer = get_channel_layer()
+		if channel_layer:
+			async_to_sync(channel_layer.group_send)(
+				f'chat_{message.conversation_id}',
+				{'type': 'chat.message.updated', 'message': payload},
+			)
+		self._broadcast_conversation_update(conversation_id=message.conversation_id)
+		return Response(payload)
 
-class NotificationViewSet(viewsets.ModelViewSet):
+
+class GoalCheckinViewSet(viewsets.ModelViewSet):
+	serializer_class = GoalCheckinSerializer
+	permission_classes = [permissions.IsAuthenticated]
+	http_method_names = ['get', 'post', 'patch', 'head', 'options']
+	ordering_fields = ['scheduled_for', 'submitted_at', 'created_at']
+	ordering = ['-scheduled_for', '-created_at']
+
+	def get_queryset(self):
+		user = self.request.user
+		today = dt_to_local_date(timezone.now(), get_user_tzinfo(user))
+		GoalCheckin.objects.filter(
+			status=GoalCheckin.STATUS_PENDING,
+			scheduled_for__lt=today,
+		).update(status=GoalCheckin.STATUS_MISSED)
+		queryset = (
+			GoalCheckin.objects.select_related('goal', 'user')
+			.prefetch_related('reactions__user')
+			.filter(
+				models.Q(goal__user=user)
+				| models.Q(goal__members=user)
+				| models.Q(goal__partnership__user_a=user)
+				| models.Q(goal__partnership__user_b=user)
+			)
+			.distinct()
+		)
+		goal_id = self.request.query_params.get('goal')
+		if goal_id:
+			queryset = queryset.filter(goal_id=goal_id)
+		return queryset
+
+	def _assert_goal_member(self, goal):
+		if self.request.user.id not in _goal_member_ids(goal):
+			raise PermissionDenied('You are not a member of this goal.')
+
+	def _save_submission(self, serializer):
+		retention_days = int(getattr(settings, 'CHECKIN_EVIDENCE_RETENTION_DAYS', 30))
+		checkin = serializer.save(
+			user=self.request.user,
+			submitted_at=timezone.now(),
+			evidence_expires_at=timezone.now() + timedelta(days=retention_days),
+		)
+		self._award_badge_if_earned(checkin)
+		return checkin
+
+	def _create_checkin_message(self, checkin):
+		conversation = _ensure_goal_conversation(checkin.goal, self.request.user)
+		Message.objects.create(
+			conversation=conversation,
+			sender=self.request.user,
+			kind=Message.KIND_CHECKIN,
+			metadata={
+				'checkin_id': checkin.id,
+				'goal_id': checkin.goal_id,
+				'goal_title': checkin.goal.title,
+				'status': checkin.status,
+				'completion_percent': checkin.completion_percent,
+				'blocker': checkin.blocker,
+				'has_evidence': bool(checkin.evidence),
+			},
+		)
+
+	def create(self, request, *args, **kwargs):
+		serializer = self.get_serializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		goal = serializer.validated_data['goal']
+		self._assert_goal_member(goal)
+		existing = GoalCheckin.objects.filter(
+			goal=goal,
+			user=request.user,
+			scheduled_for=serializer.validated_data['scheduled_for'],
+		).first()
+		if existing and existing.status not in {GoalCheckin.STATUS_PENDING, GoalCheckin.STATUS_MISSED}:
+			return Response({'detail': 'A check-in has already been submitted for this date.'}, status=status.HTTP_409_CONFLICT)
+		if existing:
+			serializer = self.get_serializer(existing, data=request.data, partial=True)
+			serializer.is_valid(raise_exception=True)
+		checkin = self._save_submission(serializer)
+		self._create_checkin_message(checkin)
+		return Response(self.get_serializer(checkin).data, status=status.HTTP_200_OK if existing else status.HTTP_201_CREATED)
+
+	def perform_update(self, serializer):
+		if serializer.instance.user_id != self.request.user.id:
+			raise PermissionDenied('Only the check-in author can update it.')
+		goal = serializer.validated_data.get('goal', serializer.instance.goal)
+		self._assert_goal_member(goal)
+		self._save_submission(serializer)
+
+	def _award_badge_if_earned(self, checkin):
+		member_ids = set(_goal_member_ids(checkin.goal))
+		if not member_ids:
+			return
+		on_time_ids = set(
+			GoalCheckin.objects.filter(
+				goal=checkin.goal,
+				scheduled_for=checkin.scheduled_for,
+				user_id__in=member_ids,
+				status__in=[GoalCheckin.STATUS_COMPLETED, GoalCheckin.STATUS_PARTIAL, GoalCheckin.STATUS_BLOCKED],
+				submitted_at__date__lte=checkin.scheduled_for,
+			).values_list('user_id', flat=True)
+		)
+		if on_time_ids == member_ids:
+			GoalCheckinBadge.objects.get_or_create(
+				goal=checkin.goal,
+				scheduled_for=checkin.scheduled_for,
+			)
+
+	@action(detail=True, methods=['post'], url_path='react')
+	def react(self, request, pk=None):
+		checkin = self.get_object()
+		serializer = GoalCheckinReactionRequestSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		reaction, _ = GoalCheckinReaction.objects.update_or_create(
+			checkin=checkin,
+			user=request.user,
+			defaults={'reaction': serializer.validated_data['reaction']},
+		)
+		checkin._prefetched_objects_cache = {}
+		return Response(self.get_serializer(checkin).data)
+
+	@action(detail=True, methods=['get'], url_path='evidence')
+	def evidence(self, request, pk=None):
+		checkin = self.get_object()
+		if not checkin.evidence:
+			return Response({'detail': 'No evidence is attached.'}, status=status.HTTP_404_NOT_FOUND)
+		if checkin.evidence_expires_at and checkin.evidence_expires_at <= timezone.now():
+			return Response({'detail': 'This evidence has expired.'}, status=status.HTTP_410_GONE)
+		if checkin.evidence_view_once and checkin.user_id != request.user.id:
+			_, created = GoalCheckinEvidenceView.objects.get_or_create(checkin=checkin, user=request.user)
+			if not created:
+				return Response({'detail': 'This view-once evidence has already been opened.'}, status=status.HTTP_410_GONE)
+		filename = checkin.evidence.name.rsplit('/', 1)[-1]
+		response = FileResponse(checkin.evidence.open('rb'), as_attachment=False, filename=filename)
+		response['Cache-Control'] = 'private, no-store, max-age=0'
+		response['Pragma'] = 'no-cache'
+		response['X-Content-Type-Options'] = 'nosniff'
+		return response
+
+
+class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
 	serializer_class = NotificationSerializer
 	permission_classes = [permissions.IsAuthenticated]
 
@@ -2013,10 +2364,15 @@ class WaitlistViewSet(viewsets.ModelViewSet):
 		return Waitlister.objects.all().order_by('-created_at')
 
 	def get_permissions(self):
-		# Allow unauthenticated access to download-waitlist endpoint
-		if self.action in ['create', 'join', 'download_waitlist']:
+		if self.action in ['create', 'join']:
 			return [permissions.AllowAny()]
 		return [permissions.IsAdminUser()]
+
+	def get_throttles(self):
+		if self.action in ['create', 'join']:
+			self.throttle_scope = 'waitlist'
+			return [ScopedRateThrottle()]
+		return super().get_throttles()
 
 
 	@extend_schema(
@@ -2042,9 +2398,9 @@ class WaitlistViewSet(viewsets.ModelViewSet):
 		instance = serializer.save()
 		return Response(self.get_serializer(instance).data, status=status.HTTP_201_CREATED)
 
-	@action(detail=False, methods=['get'], url_path='download-waitlist', permission_classes=[permissions.AllowAny])
+	@action(detail=False, methods=['get'], url_path='download-waitlist', permission_classes=[permissions.IsAdminUser])
 	def download_waitlist(self, request):
-		"""Download all waitlisters as CSV (no auth required, for testing)."""
+		"""Download all waitlisters as CSV for an authenticated admin."""
 		import csv
 		from django.http import HttpResponse
 		qs = Waitlister.objects.all().order_by('-created_at')

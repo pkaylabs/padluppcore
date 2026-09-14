@@ -6,7 +6,6 @@ from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.utils.html import escape
 from rest_framework import status
-from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -14,8 +13,9 @@ from accounts.models import User
 from padluppcore.utils.email import EmailSendError, send_mailgun_email
 
 from .activity import get_user_tzinfo
-from .models import CheckinReminderLog, Goal, InactivityNudgeLog
+from .models import CheckinReminderLog, Goal, GoalCheckin, InactivityNudgeLog, Notification, SubTaskReminderLog, Task
 from .nudges import build_inactivity_nudge_email
+from .permissions import HasCronSecret
 
 
 def _notification_email_for_user(user) -> str:
@@ -29,12 +29,12 @@ def _notification_email_for_user(user) -> str:
 class InactiveUserNudgeView(APIView):
 	"""Send nudges to users who have been inactive for a configurable threshold.
 
-	This endpoint is intentionally unauthenticated so a cron job can call it directly.
+	This endpoint is called by the local scheduler with a shared secret.
 	It is idempotent for a given user/inactivity span via InactivityNudgeLog.
 	"""
 
 	authentication_classes = []
-	permission_classes = [AllowAny]
+	permission_classes = [HasCronSecret]
 
 	def post(self, request):
 		threshold_days = 14
@@ -150,6 +150,9 @@ def _checkin_recipients_for_goal(goal: Goal):
 			recipients[partnership.user_a_id] = partnership.user_a
 		if partnership.user_b_id and partnership.user_b and _notification_email_for_user(partnership.user_b):
 			recipients[partnership.user_b_id] = partnership.user_b
+	for member in goal.members.all():
+		if _notification_email_for_user(member):
+			recipients[member.id] = member
 
 	return list(recipients.values())
 
@@ -165,7 +168,7 @@ def _build_checkin_reminder_email(*, recipient_name: str, reminders: list[dict])
 		else f'Your {reminder_count} Padlupp check-in reminders'
 	)
 	text_items = '\n'.join(
-		f'- {(item["goal_title"] or "").strip() or "Your goal"} '
+		f'- {(item["title"] or "").strip() or "Your goal"} '
 		f'(due {item["due_date"].isoformat()}, {item["frequency"].lower().replace("-", " ")})'
 		for item in reminders
 	)
@@ -181,7 +184,7 @@ def _build_checkin_reminder_email(*, recipient_name: str, reminders: list[dict])
 	)
 	html_items = ''.join(
 		'<li style="margin-bottom:10px;">'
-		f'<strong>{escape((item["goal_title"] or "").strip() or "Your goal")}</strong><br>'
+		f'<strong>{escape((item["title"] or "").strip() or "Your goal")}</strong><br>'
 		f'Due {item["due_date"].isoformat()} &middot; '
 		f'{escape(item["frequency"].lower().replace("-", " "))}'
 		'</li>'
@@ -205,26 +208,36 @@ class GoalCheckinReminderCronView(APIView):
 	"""Send check-in reminders for goals whose cadence matches tomorrow."""
 
 	authentication_classes = []
-	permission_classes = [AllowAny]
+	permission_classes = [HasCronSecret]
 
 	def post(self, request):
 		now = timezone.now()
+		expired_evidence_purged = 0
+		for checkin in GoalCheckin.objects.filter(
+			evidence_expires_at__lte=now,
+		).exclude(Q(evidence__isnull=True) | Q(evidence='')).iterator():
+			checkin.evidence.delete(save=False)
+			checkin.evidence = None
+			checkin.save(update_fields=['evidence', 'updated_at'])
+			expired_evidence_purged += 1
 
 		goals = (
 			Goal.objects.filter(is_active=True)
 			.select_related('user', 'partnership', 'partnership__user_a', 'partnership__user_b')
+			.prefetch_related('members')
 			.order_by('id')
 		)
 
 		goals_checked = 0
 		goals_due_tomorrow = 0
+		subtasks_due_tomorrow = 0
 		emails_sent = 0
 		emails_skipped = 0
 		emails_failed = 0
 		preferences_skipped = 0
 		reminders_by_recipient = {}
 
-		for goal in goals.iterator():
+		for goal in goals.iterator(chunk_size=200):
 			goals_checked += 1
 			tzinfo = get_user_tzinfo(goal.user)
 			today_local = timezone.localtime(now, tzinfo).date()
@@ -237,6 +250,11 @@ class GoalCheckinReminderCronView(APIView):
 			frequency = (goal.checkin_frequency or Goal.CHECKIN_DAILY).strip().upper()
 
 			for recipient in _checkin_recipients_for_goal(goal):
+				GoalCheckin.objects.get_or_create(
+					goal=goal,
+					user=recipient,
+					scheduled_for=tomorrow_local,
+				)
 				if not recipient.notify_on_reminders:
 					preferences_skipped += 1
 					continue
@@ -256,12 +274,49 @@ class GoalCheckinReminderCronView(APIView):
 				)
 				recipient_batch['reminders'].append(
 					{
+						'kind': 'goal',
 						'goal': goal,
-						'goal_title': goal.title,
+						'title': goal.title,
 						'due_date': tomorrow_local,
 						'frequency': frequency,
 					}
 				)
+
+		for subtask in (
+			Task.objects.select_related('owner', 'goal')
+			.exclude(status=Task.STATUS_COMPLETED)
+			.filter(due_at__isnull=False)
+			.iterator()
+		):
+			recipient = subtask.owner
+			if not recipient or not _notification_email_for_user(recipient):
+				continue
+			tzinfo = get_user_tzinfo(recipient)
+			tomorrow_local = timezone.localtime(now, tzinfo).date() + timedelta(days=1)
+			if timezone.localtime(subtask.due_at, tzinfo).date() != tomorrow_local:
+				continue
+			subtasks_due_tomorrow += 1
+			if not recipient.notify_on_reminders:
+				preferences_skipped += 1
+				continue
+			if SubTaskReminderLog.objects.filter(
+				task=subtask,
+				user=recipient,
+				reminder_for_date=tomorrow_local,
+			).exists():
+				emails_skipped += 1
+				continue
+			recipient_batch = reminders_by_recipient.setdefault(
+				recipient.id,
+				{'recipient': recipient, 'reminders': []},
+			)
+			recipient_batch['reminders'].append({
+				'kind': 'subtask',
+				'subtask': subtask,
+				'title': f'{subtask.goal.title}: {subtask.title}',
+				'due_date': tomorrow_local,
+				'frequency': 'subtask',
+			})
 
 		for recipient_batch in reminders_by_recipient.values():
 			recipient = recipient_batch['recipient']
@@ -291,19 +346,43 @@ class GoalCheckinReminderCronView(APIView):
 						reminder_for_date=reminder['due_date'],
 						frequency=reminder['frequency'],
 					)
-					for reminder in reminders
+					for reminder in reminders if reminder['kind'] == 'goal'
 				]
 			)
+			SubTaskReminderLog.objects.bulk_create(
+				[
+					SubTaskReminderLog(
+						task=reminder['subtask'],
+						user=recipient,
+						reminder_for_date=reminder['due_date'],
+					)
+					for reminder in reminders if reminder['kind'] == 'subtask'
+				]
+			)
+			for reminder in reminders:
+				Notification.objects.create(
+					user=recipient,
+					type='checkin_reminder' if reminder['kind'] == 'goal' else 'subtask_reminder',
+					payload={
+						'goal_id': reminder.get('goal').id if reminder.get('goal') else reminder['subtask'].goal_id,
+						'subtask_id': reminder.get('subtask').id if reminder.get('subtask') else None,
+						'title': reminder['title'],
+						'due_date': reminder['due_date'].isoformat(),
+						'suppress_email': True,
+					},
+				)
 			emails_sent += 1
 
 		return Response(
 			{
 				'goals_checked': goals_checked,
 				'goals_due_tomorrow': goals_due_tomorrow,
+				'subtasks_due_tomorrow': subtasks_due_tomorrow,
 				'emails_sent': emails_sent,
 				'emails_skipped': emails_skipped,
 				'emails_failed': emails_failed,
 				'preferences_skipped': preferences_skipped,
+				'expired_evidence_purged': expired_evidence_purged,
 			},
 			status=status.HTTP_200_OK,
 		)

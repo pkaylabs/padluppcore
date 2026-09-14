@@ -1,24 +1,51 @@
 from pathlib import Path
 
 import os
+import sys
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 from datetime import timedelta
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Load environment variables from .env.
-# Note: Some setups keep .env at repo root (BASE_DIR/.env), others next to settings (padluppcore/.env).
-load_dotenv(BASE_DIR / '.env')
-load_dotenv(Path(__file__).resolve().parent / '.env')
+# Production can keep secrets outside the checkout via DJANGO_ENV_FILE. Local
+# development retains compatibility with either historical .env location.
+DJANGO_ENV_FILE = os.getenv('DJANGO_ENV_FILE', '').strip()
+if DJANGO_ENV_FILE:
+    load_dotenv(DJANGO_ENV_FILE)
+else:
+    load_dotenv(BASE_DIR / '.env')
+    load_dotenv(Path(__file__).resolve().parent / '.env')
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-#v!3(v3lc@y(yu)u@8vhp5gf2jg2hgn9-qpff#-9gar#$u)+oh'
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+def env_bool(name, default=False):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
 
-ALLOWED_HOSTS = ["*", 'localhost', '127.0.0.1', 'api.padlupp.com']
+
+def env_list(name, default=()):
+    value = os.getenv(name)
+    if value is None:
+        return list(default)
+    return [item.strip() for item in value.split(',') if item.strip()]
+
+
+DEBUG = env_bool('DJANGO_DEBUG', False)
+
+SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', '').strip()
+if not SECRET_KEY:
+    if DEBUG or 'test' in sys.argv:
+        SECRET_KEY = 'dev-only-padlupp-secret-key-not-for-production'
+    else:
+        raise ImproperlyConfigured('DJANGO_SECRET_KEY must be set when DJANGO_DEBUG is disabled.')
+
+ALLOWED_HOSTS = env_list(
+    'DJANGO_ALLOWED_HOSTS',
+    ('localhost', '127.0.0.1') if DEBUG else ('api.padlupp.com', '127.0.0.1'),
+)
 
 # --- CSRF / proxy settings for HTTPS behind a reverse proxy ---
 # When running behind Nginx/Cloudflare/etc, Django may see the connection as HTTP
@@ -28,9 +55,20 @@ USE_X_FORWARDED_HOST = True
 
 # Allow POSTs to the Django admin from the deployed domain.
 # (Django requires scheme in CSRF_TRUSTED_ORIGINS.)
-CSRF_TRUSTED_ORIGINS = [
-    'https://api.padlupp.com',
-]
+CSRF_TRUSTED_ORIGINS = env_list(
+    'DJANGO_CSRF_TRUSTED_ORIGINS',
+    ('http://localhost:8080', 'http://127.0.0.1:8080') if DEBUG else ('https://api.padlupp.com',),
+)
+
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
+SECURE_SSL_REDIRECT = not DEBUG
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_HSTS_SECONDS = 31536000 if not DEBUG else 0
+SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+SECURE_HSTS_PRELOAD = True
+SECURE_REFERRER_POLICY = 'same-origin'
+X_FRAME_OPTIONS = 'DENY'
 
 
 # Application definition
@@ -136,7 +174,7 @@ else:
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'NAME': Path(os.getenv('DATABASE_PATH', BASE_DIR / 'db.sqlite3')),
     }
 }
 
@@ -181,12 +219,13 @@ USE_TZ = True
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles/'
 
-STATICFILES_DIRS = [
-    BASE_DIR / "static",
-]
+STATICFILES_DIRS = [path for path in (BASE_DIR / 'static',) if path.exists()]
 
 MEDIA_URL = '/assets/'
-MEDIA_ROOT = BASE_DIR / "assets"
+MEDIA_ROOT = Path(os.getenv('MEDIA_ROOT', BASE_DIR / 'assets'))
+
+MESSAGE_RECALL_WINDOW_MINUTES = int(os.getenv('MESSAGE_RECALL_WINDOW_MINUTES', '15'))
+CHECKIN_EVIDENCE_RETENTION_DAYS = int(os.getenv('CHECKIN_EVIDENCE_RETENTION_DAYS', '30'))
 
 # Optional: used to build absolute media URLs when there is no request context.
 # Example: https://api.padlupp.com
@@ -205,14 +244,22 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20,
+    'DEFAULT_THROTTLE_RATES': {
+        'auth': '20/minute',
+        'registration': '10/hour',
+        'waitlist': '10/hour',
+    },
 }
 # knox - token expiry
 REST_KNOX = {
     'TOKEN_TTL': timedelta(hours=6),
 }
 
-# django cors headers settings
-CORS_ALLOW_ALL_ORIGINS = True
+# Browser clients are restricted to explicitly configured origins.
+CORS_ALLOWED_ORIGINS = env_list(
+    'DJANGO_CORS_ALLOWED_ORIGINS',
+    ('http://localhost:8080', 'http://127.0.0.1:8080') if DEBUG else ('https://app.padlupp.com',),
+)
 
 # Paystack configuration
 PAYSTACK_SECRET_KEY = os.getenv('PAYSTACK_SECRET_KEY', '')
@@ -221,14 +268,14 @@ PAYSTACK_BASE_URL = os.getenv('PAYSTACK_BASE_URL', 'https://api.paystack.co')
 
 
 # email settings
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 587
-EMAIL_HOST_USER = ''
-EMAIL_HOST_PASSWORD = ''
-EMAIL_USE_TLS = True
-EMAIL_USE_SSL = False
-DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_MAIL')
+EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend')
+EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
+EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+EMAIL_USE_TLS = env_bool('EMAIL_USE_TLS', True)
+EMAIL_USE_SSL = env_bool('EMAIL_USE_SSL', False)
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', os.getenv('DEFAULT_FROM_MAIL', EMAIL_HOST_USER))
 
 # Mailgun (optional)
 # Used for sending notification emails via Mailgun HTTP API.
@@ -240,6 +287,10 @@ MAILGUN_FROM_EMAIL = os.getenv('MAILGUN_FROM_EMAIL', DEFAULT_FROM_EMAIL or '').s
 # Notification emails
 # Disabled by default; enable with EMAIL_NOTIFICATIONS_ENABLED=1 and Mailgun config.
 EMAIL_NOTIFICATIONS_ENABLED = os.getenv('EMAIL_NOTIFICATIONS_ENABLED', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+# Requests to scheduler-only endpoints must provide this value in
+# X-Padlupp-Cron-Secret. Development may omit it while DJANGO_DEBUG is enabled.
+CRON_SHARED_SECRET = os.getenv('CRON_SHARED_SECRET', '').strip()
 
 # SMS SETTINGS
 SENDER_ID = os.getenv('SMS_SENDER_ID') # 11 characters max

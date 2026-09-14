@@ -14,10 +14,19 @@ from padluppcore.utils.email import EmailSendError, send_mailgun_email
 
 from .activity import record_user_activity
 from .models import Conversation, ConversationMembership, Evidence, Goal, GoalMembership, Message, Notification, Task, TimerSession
-from .presence import get_online_user_ids
+from .presence import get_globally_online_user_ids, get_online_user_ids
 from .serializers import MessageSerializer
 
 logger = logging.getLogger(__name__)
+
+
+def _file_url(field_file):
+    if not field_file or not getattr(field_file, 'name', ''):
+        return None
+    try:
+        return field_file.url
+    except (AttributeError, ValueError):
+        return None
 
 
 def _conversation_participant_ids(conversation: Conversation) -> list[int]:
@@ -35,6 +44,15 @@ def _notification_preference_enabled(user, notification_type: str) -> bool:
     preference_by_type = {
         'new_message': 'notify_on_new_message',
         'new_match': 'notify_on_new_match',
+        'checkin_reminder': 'notify_on_reminders',
+        'subtask_reminder': 'notify_on_reminders',
+        'new_task': 'notify_on_reminders',
+        'review_requested': 'notify_on_reminders',
+        'evidence_submitted': 'notify_on_reminders',
+        'task_approved': 'notify_on_reminders',
+        'task_changes_requested': 'notify_on_reminders',
+        'buddy_request_accepted': 'notify_on_new_match',
+        'goal_shared': 'notify_on_new_match',
     }
     preference_field = preference_by_type.get((notification_type or '').strip())
     if not preference_field:
@@ -63,6 +81,12 @@ def _broadcast_conversation_state(conversation_id: int):
         member_names = [u.name for u in conv.members.all()]
 
         for uid in user_ids:
+            if ConversationMembership.objects.filter(
+                conversation_id=conv.id,
+                user_id=uid,
+                archived_at__isnull=False,
+            ).exists():
+                continue
             partner_name = None
             partner_avatar = None
             if conv.is_group and conv.goal_id:
@@ -70,7 +94,7 @@ def _broadcast_conversation_state(conversation_id: int):
             elif conv.partnership_id:
                 partner_user = conv.partnership.user_b if conv.partnership.user_a_id == uid else conv.partnership.user_a
                 partner_name = getattr(partner_user, 'name', None)
-                partner_avatar = getattr(getattr(partner_user, 'avatar', None), 'url', None)
+                partner_avatar = _file_url(getattr(partner_user, 'avatar', None))
             else:
                 partner_name = conv.goal.title if conv.goal_id else ', '.join(member_names)
 
@@ -142,7 +166,10 @@ def notify_new_message(sender, instance: Message, created: bool, **kwargs):
         for user_id in _conversation_participant_ids(conversation)
         if user_id != instance.sender_id
     ]
-    online_user_ids = get_online_user_ids(instance.conversation_id)
+    online_user_ids = (
+        get_globally_online_user_ids()
+        | get_online_user_ids(instance.conversation_id)
+    )
     recipient_ids = [
         user_id for user_id in recipient_ids if user_id not in online_user_ids
     ]
@@ -356,6 +383,8 @@ def _notification_email_content(notification: Notification) -> tuple[str, str]:
 @receiver(post_save, sender=Notification)
 def email_notification_created(sender, instance: Notification, created: bool, **kwargs):
     if not created:
+        return
+    if (instance.payload or {}).get('suppress_email'):
         return
     if not _email_notifications_enabled():
         return

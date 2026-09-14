@@ -5,6 +5,11 @@ from .models import (
 	Goal,
 	GoalMembership,
 	CheckinReminderLog,
+	SubTaskReminderLog,
+	GoalCheckin,
+	GoalCheckinBadge,
+	GoalCheckinEvidenceView,
+	GoalCheckinReaction,
 	Partnership,
 	Event,
 	Match,
@@ -157,6 +162,24 @@ class GoalMembershipAdmin(admin.ModelAdmin):
 
 @admin.register(ConversationMembership)
 class ConversationMembershipAdmin(admin.ModelAdmin):
-	list_display = ('id', 'conversation', 'user', 'added_by', 'created_at')
+	list_display = ('id', 'conversation', 'user', 'added_by', 'archived_at', 'created_at')
 	search_fields = ('conversation__id', 'user__email', 'user__name')
+
+
+@admin.register(SubTaskReminderLog)
+class SubTaskReminderLogAdmin(admin.ModelAdmin):
+	list_display = ('id', 'task', 'user', 'reminder_for_date', 'created_at')
+	search_fields = ('task__title', 'user__email', 'user__name')
+
+
+@admin.register(GoalCheckin)
+class GoalCheckinAdmin(admin.ModelAdmin):
+	list_display = ('id', 'goal', 'user', 'scheduled_for', 'status', 'completion_percent', 'submitted_at')
+	search_fields = ('goal__title', 'user__email', 'user__name')
+	list_filter = ('status', 'scheduled_for', 'evidence_view_once')
+
+
+admin.site.register(GoalCheckinReaction)
+admin.site.register(GoalCheckinEvidenceView)
+admin.site.register(GoalCheckinBadge)
 
