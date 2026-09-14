@@ -5,7 +5,8 @@ Production migration uses a rehearsal database before cutover:
 1. Create a consistent SQLite backup with Python's SQLite backup API.
 2. Export application data with Django `dumpdata`, excluding generated content
    types and permissions.
-3. Migrate and load a separate PostgreSQL rehearsal database.
+3. Migrate a separate PostgreSQL rehearsal database, run `flush --noinput` to
+   remove records created by data migrations, and then load the current export.
 4. Export PostgreSQL and compare both fixtures with `compare_fixtures.py`.
 5. Stop the application briefly, repeat the backup/export/import verification,
    and only then update the production environment to PostgreSQL.

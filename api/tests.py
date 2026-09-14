@@ -7,6 +7,7 @@ from django.conf import settings
 from django.test import override_settings
 from django.test import TransactionTestCase
 from django.core.cache import cache
+from django.db.models.signals import post_save
 from rest_framework import status
 from rest_framework.test import APITestCase
 from rest_framework.test import APIRequestFactory
@@ -22,6 +23,49 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from padluppcore.utils.email import EmailSendError
 from asgiref.sync import async_to_sync
 from api.consumers import ChatConsumer
+
+
+@override_settings(EMAIL_NOTIFICATIONS_ENABLED=True)
+class RawFixtureSignalTests(APITestCase):
+	def setUp(self):
+		self.user = User.objects.create(
+			email='fixture@test.com',
+			phone='+19998887777',
+			name='Fixture User',
+		)
+
+	def test_raw_goal_save_does_not_create_related_records(self):
+		goal = Goal.objects.create(user=self.user, title='Fixture goal')
+		GoalMembership.objects.filter(goal=goal).delete()
+
+		post_save.send(
+			sender=Goal,
+			instance=goal,
+			created=True,
+			raw=True,
+			using='default',
+		)
+
+		self.assertFalse(GoalMembership.objects.filter(goal=goal).exists())
+
+	@patch('api.signals.send_mailgun_email')
+	def test_raw_notification_save_does_not_send_email(self, mock_send_email):
+		notification = Notification(
+			user=self.user,
+			type='new_message',
+			payload={},
+		)
+
+		with self.captureOnCommitCallbacks(execute=True):
+			post_save.send(
+				sender=Notification,
+				instance=notification,
+				created=True,
+				raw=True,
+				using='default',
+			)
+
+		mock_send_email.assert_not_called()
 
 
 @override_settings(EMAIL_NOTIFICATIONS_ENABLED=False)

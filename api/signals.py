@@ -128,6 +128,8 @@ def _broadcast_conversation_state(conversation_id: int):
 
 @receiver(post_save, sender=TimerSession)
 def record_timer_session_activity(sender, instance: TimerSession, created: bool, **kwargs):
+    if kwargs.get('raw'):
+        return
     if not created or not instance.user_id:
         return
     record_user_activity(instance.user, at=instance.started_at or instance.created_at, source='timer_session')
@@ -135,6 +137,8 @@ def record_timer_session_activity(sender, instance: TimerSession, created: bool,
 
 @receiver(post_save, sender=Evidence)
 def record_evidence_activity(sender, instance: Evidence, created: bool, **kwargs):
+    if kwargs.get('raw'):
+        return
     if not created or not instance.submitted_by_id:
         return
     record_user_activity(instance.submitted_by, at=instance.submitted_at or instance.created_at, source='evidence_submitted')
@@ -142,6 +146,8 @@ def record_evidence_activity(sender, instance: Evidence, created: bool, **kwargs
 
 @receiver(post_save, sender=Message)
 def record_message_activity(sender, instance: Message, created: bool, **kwargs):
+    if kwargs.get('raw'):
+        return
     if not created or not instance.sender_id:
         return
     record_user_activity(instance.sender, at=instance.created_at, source='message_sent')
@@ -149,6 +155,8 @@ def record_message_activity(sender, instance: Message, created: bool, **kwargs):
 
 @receiver(post_save, sender=Message)
 def notify_new_message(sender, instance: Message, created: bool, **kwargs):
+    if kwargs.get('raw'):
+        return
     if not created or not instance.sender_id or not instance.conversation_id:
         return
 
@@ -202,6 +210,8 @@ def notify_new_message(sender, instance: Message, created: bool, **kwargs):
 
 @receiver(post_save, sender=Goal)
 def record_goal_activity(sender, instance: Goal, created: bool, **kwargs):
+    if kwargs.get('raw'):
+        return
     # Match existing streak semantics: shared goal changes count for both partners.
     at = instance.updated_at or instance.created_at
 
@@ -220,6 +230,8 @@ def record_goal_activity(sender, instance: Goal, created: bool, **kwargs):
 
 @receiver(post_save, sender=Goal)
 def sync_goal_members(sender, instance: Goal, created: bool, **kwargs):
+    if kwargs.get('raw'):
+        return
     goal = Goal.objects.select_related('user', 'partnership', 'partnership__user_a', 'partnership__user_b').get(id=instance.id)
     member_users = {}
     if goal.user_id:
@@ -237,6 +249,8 @@ def sync_goal_members(sender, instance: Goal, created: bool, **kwargs):
 
 @receiver(post_save, sender=GoalMembership)
 def sync_goal_group_conversation(sender, instance: GoalMembership, created: bool, **kwargs):
+    if kwargs.get('raw'):
+        return
     if not created:
         return
     goal = Goal.objects.select_related('user').prefetch_related('members').get(id=instance.goal_id)
@@ -268,6 +282,8 @@ def sync_goal_group_conversation(sender, instance: GoalMembership, created: bool
 
 @receiver(post_save, sender=Task)
 def record_task_completion_activity(sender, instance: Task, created: bool, **kwargs):
+    if kwargs.get('raw'):
+        return
     if instance.status != Task.STATUS_COMPLETED or not instance.owner_id:
         return
     record_user_activity(instance.owner, at=instance.updated_at or instance.created_at, source='task_completed')
@@ -281,7 +297,7 @@ def broadcast_conversation_created(sender, instance: Conversation, created: bool
     created (REST, admin, scripts, etc.).
     """
 
-    if not created:
+    if kwargs.get('raw') or not created:
         return
 
     def _send_after_commit():
@@ -303,7 +319,7 @@ def broadcast_conversation_created(sender, instance: Conversation, created: bool
 
 @receiver(post_save, sender=ConversationMembership)
 def broadcast_conversation_membership_created(sender, instance: ConversationMembership, created: bool, **kwargs):
-    if not created:
+    if kwargs.get('raw') or not created:
         return
     transaction.on_commit(lambda: _broadcast_conversation_state(instance.conversation_id))
 
@@ -382,7 +398,7 @@ def _notification_email_content(notification: Notification) -> tuple[str, str]:
 
 @receiver(post_save, sender=Notification)
 def email_notification_created(sender, instance: Notification, created: bool, **kwargs):
-    if not created:
+    if kwargs.get('raw') or not created:
         return
     if (instance.payload or {}).get('suppress_email'):
         return
