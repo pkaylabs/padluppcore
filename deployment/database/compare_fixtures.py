@@ -32,6 +32,33 @@ def records_by_model(records: list[dict]) -> dict[str, Counter]:
     return grouped
 
 
+def changed_field_counts(source: list[dict], target: list[dict]) -> Counter:
+    def index(records: list[dict]) -> dict[tuple[str, str], dict | None]:
+        indexed: dict[tuple[str, str], dict | None] = {}
+        for record in records:
+            identity = (
+                str(record.get('model', '')),
+                json.dumps(record.get('pk'), sort_keys=True, ensure_ascii=True),
+            )
+            indexed[identity] = record if identity not in indexed else None
+        return indexed
+
+    source_index = index(source)
+    target_index = index(target)
+    changed = Counter()
+    for identity in source_index.keys() & target_index.keys():
+        source_record = source_index[identity]
+        target_record = target_index[identity]
+        if source_record is None or target_record is None:
+            continue
+        source_fields = source_record.get('fields', {})
+        target_fields = target_record.get('fields', {})
+        for field in source_fields.keys() | target_fields.keys():
+            if source_fields.get(field) != target_fields.get(field):
+                changed[(identity[0], str(field))] += 1
+    return changed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('source', type=Path)
@@ -61,6 +88,11 @@ def main() -> int:
                 )
         print(f'Missing records: {sum((source_records - target_records).values())}')
         print(f'Unexpected records: {sum((target_records - source_records).values())}')
+        changed_fields = changed_field_counts(source, target)
+        if changed_fields:
+            print('Changed fields by model:')
+            for (model, field), count in sorted(changed_fields.items()):
+                print(f'{model}.{field}: {count}')
         return 1
 
     print(f'Fixtures match exactly: {len(source)} records across {len(model_counts(source))} models.')
