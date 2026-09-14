@@ -5,8 +5,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections import Counter
 from pathlib import Path
+
+
+ZERO_FRACTION_UTC = re.compile(
+    r'^(?P<seconds>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.0+Z$'
+)
 
 
 def load_fixture(path: Path) -> list[dict]:
@@ -16,8 +22,25 @@ def load_fixture(path: Path) -> list[dict]:
     return data
 
 
+def normalize_database_value(value):
+    if isinstance(value, dict):
+        return {key: normalize_database_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [normalize_database_value(item) for item in value]
+    if isinstance(value, str):
+        timestamp_match = ZERO_FRACTION_UTC.fullmatch(value)
+        if timestamp_match:
+            return f'{timestamp_match.group("seconds")}Z'
+    return value
+
+
 def canonical_record(record: dict) -> str:
-    return json.dumps(record, sort_keys=True, separators=(',', ':'), ensure_ascii=True)
+    return json.dumps(
+        normalize_database_value(record),
+        sort_keys=True,
+        separators=(',', ':'),
+        ensure_ascii=True,
+    )
 
 
 def model_counts(records: list[dict]) -> Counter:
@@ -95,7 +118,10 @@ def main() -> int:
                 print(f'{model}.{field}: {count}')
         return 1
 
-    print(f'Fixtures match exactly: {len(source)} records across {len(model_counts(source))} models.')
+    print(
+        f'Fixtures match: {len(source)} records across '
+        f'{len(model_counts(source))} models (database-normalized values).'
+    )
     for model, count in sorted(model_counts(source).items()):
         print(f'{model}: {count}')
     return 0
