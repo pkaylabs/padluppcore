@@ -2,8 +2,9 @@
 
 [Unit]
 Description=Uvicorn server for padluppcore (ASGI + WebSockets)
-After=network-online.target
+After=network-online.target postgresql.service
 Wants=network-online.target
+Requires=postgresql.service
 
 [Service]
 Type=simple
