@@ -171,12 +171,48 @@ else:
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': Path(os.getenv('DATABASE_PATH', BASE_DIR / 'db.sqlite3')),
+DATABASE_ENGINE = os.getenv('DATABASE_ENGINE', 'sqlite').strip().lower()
+
+if DATABASE_ENGINE in {'postgres', 'postgresql', 'django.db.backends.postgresql'}:
+    postgres_environment = {
+        'POSTGRES_DB': ('NAME', os.getenv('POSTGRES_DB', '').strip()),
+        'POSTGRES_USER': ('USER', os.getenv('POSTGRES_USER', '').strip()),
+        'POSTGRES_PASSWORD': ('PASSWORD', os.getenv('POSTGRES_PASSWORD', '')),
+        'POSTGRES_HOST': ('HOST', os.getenv('POSTGRES_HOST', '127.0.0.1').strip()),
+        'POSTGRES_PORT': ('PORT', os.getenv('POSTGRES_PORT', '5432').strip()),
     }
-}
+    missing_postgres_settings = [
+        name for name, (_, value) in postgres_environment.items() if not value
+    ]
+    if missing_postgres_settings:
+        raise ImproperlyConfigured(
+            'PostgreSQL is enabled but these settings are missing: '
+            + ', '.join(missing_postgres_settings)
+        )
+    postgres_settings = {
+        database_key: value
+        for database_key, value in postgres_environment.values()
+    }
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            **postgres_settings,
+            'CONN_MAX_AGE': int(os.getenv('DATABASE_CONN_MAX_AGE', '60')),
+            'CONN_HEALTH_CHECKS': True,
+            'OPTIONS': {
+                'sslmode': os.getenv('POSTGRES_SSLMODE', 'prefer').strip(),
+            },
+        }
+    }
+elif DATABASE_ENGINE in {'sqlite', 'sqlite3', 'django.db.backends.sqlite3'}:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': Path(os.getenv('DATABASE_PATH', BASE_DIR / 'db.sqlite3')),
+        }
+    }
+else:
+    raise ImproperlyConfigured(f'Unsupported DATABASE_ENGINE: {DATABASE_ENGINE}')
 
 
 # Password validation
