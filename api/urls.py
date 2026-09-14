@@ -16,6 +16,7 @@ from .viewsets import (
 	EvidenceViewSet,
 	EventViewSet,
 	GoalViewSet,
+	GoalCheckinViewSet,
 	MatchViewSet,
 	NotificationViewSet,
 	MessageViewSet,
@@ -33,6 +34,7 @@ router = DefaultRouter()
 router.register('onboarding', OnboardingViewSet, basename='onboarding')
 router.register('auth', AuthViewSet, basename='auth')
 router.register('goals', GoalViewSet, basename='goals')
+router.register('checkins', GoalCheckinViewSet, basename='checkins')
 router.register('partnerships', PartnershipViewSet, basename='partnerships')
 router.register('matches', MatchViewSet, basename='matches')
 router.register('buddies', BuddyViewSet, basename='buddies')

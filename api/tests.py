@@ -15,7 +15,7 @@ from django.utils import timezone
 from datetime import datetime, timezone as dt_timezone, timedelta
 
 from accounts.models import User
-from api.models import BuddyRequest, Partnership, Profile, Conversation, Message, Goal, GoalMembership, Match, Task, TimerSession, Evidence, Notification, UserDailyActivity, InactivityNudgeLog, CheckinReminderLog, Waitlister
+from api.models import BuddyRequest, Partnership, Profile, Conversation, ConversationMembership, Message, Goal, GoalCheckin, GoalCheckinBadge, GoalMembership, Match, Task, TimerSession, Evidence, Notification, UserDailyActivity, InactivityNudgeLog, CheckinReminderLog, SubTaskReminderLog, Waitlister
 from api.serializers import UserSerializer, MessageSerializer
 from api.consumers import _ScopeRequest
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -45,6 +45,7 @@ class BuddyEndpointsTests(APITestCase):
 
 		self.client.force_authenticate(user=self.user)
 
+	@override_settings(EMAIL_NOTIFICATIONS_ENABLED=True)
 	@patch('api.viewsets.send_mailgun_email')
 	def test_connect_and_invitations_accept_flow_creates_partnership(self, mock_send_mailgun_email):
 		connect_url = reverse('buddies-connect')
@@ -75,6 +76,7 @@ class BuddyEndpointsTests(APITestCase):
 		user_a, user_b = sorted([self.user, self.other], key=lambda u: u.id)
 		self.assertTrue(Partnership.objects.filter(user_a=user_a, user_b=user_b).exists())
 
+	@override_settings(EMAIL_NOTIFICATIONS_ENABLED=True)
 	@patch('api.viewsets.send_mailgun_email')
 	def test_connect_sends_connection_request_email(self, mock_send_mailgun_email):
 		connect_url = reverse('buddies-connect')
@@ -84,6 +86,21 @@ class BuddyEndpointsTests(APITestCase):
 		called_kwargs = mock_send_mailgun_email.call_args.kwargs
 		self.assertEqual(called_kwargs.get('to_email'), self.other.email)
 		self.assertIn('https://app.padlupp.com', called_kwargs.get('text', ''))
+
+	@override_settings(EMAIL_NOTIFICATIONS_ENABLED=True)
+	@patch('api.viewsets.send_mailgun_email')
+	def test_connect_respects_new_match_email_preference(self, mock_send_mailgun_email):
+		self.other.notify_on_new_match = False
+		self.other.save(update_fields=['notify_on_new_match'])
+
+		response = self.client.post(
+			reverse('buddies-connect'),
+			data={'to_user': self.other.id, 'message': 'Hello'},
+			format='json',
+		)
+
+		self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+		mock_send_mailgun_email.assert_not_called()
 
 	def test_reject_removes_from_invitations(self):
 		BuddyRequest.objects.create(from_user=self.user, to_user=self.other)
@@ -329,7 +346,11 @@ class StatsEndpointsTests(APITestCase):
 		Evidence.objects.filter(id=evidence.id).update(submitted_at=d2)
 
 
+@override_settings(CRON_SHARED_SECRET='test-cron-secret')
 class InactivityNudgeEndpointTests(APITestCase):
+	def setUp(self):
+		self.client.credentials(HTTP_X_PADLUPP_CRON_SECRET='test-cron-secret')
+
 	def _mk_user(self, *, email: str, phone: str, name: str):
 		user = User(email=email, phone=phone, name=name)
 		user.set_password('pass1234')
@@ -337,7 +358,7 @@ class InactivityNudgeEndpointTests(APITestCase):
 		return user
 
 	@patch('api.views.send_mailgun_email')
-	def test_nudge_endpoint_is_public_and_idempotent(self, mock_send_mailgun_email):
+	def test_nudge_endpoint_is_authenticated_and_idempotent(self, mock_send_mailgun_email):
 		url = reverse('cron-nudge-inactive-users')
 		now = datetime(2026, 4, 25, 12, 0, 0, tzinfo=dt_timezone.utc)
 
@@ -410,6 +431,11 @@ class InactivityNudgeEndpointTests(APITestCase):
 		self.assertEqual(response.data['nudged_count'], 0)
 		mock_send_mailgun_email.assert_not_called()
 		self.assertFalse(InactivityNudgeLog.objects.filter(user=opted_out).exists())
+
+	def test_nudge_rejects_missing_cron_secret(self):
+		self.client.credentials()
+		response = self.client.post(reverse('cron-nudge-inactive-users'))
+		self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
 
 @override_settings(
@@ -487,7 +513,11 @@ class ChatPresenceTests(TransactionTestCase):
 		self.assertEqual(self.user.last_seen_at, heartbeat_at)
 
 
+@override_settings(CRON_SHARED_SECRET='test-cron-secret')
 class CheckinReminderCronEndpointTests(APITestCase):
+	def setUp(self):
+		self.client.credentials(HTTP_X_PADLUPP_CRON_SECRET='test-cron-secret')
+
 	def _mk_user(self, *, email: str, phone: str, name: str):
 		user = User(email=email, phone=phone, name=name)
 		user.set_password('pass1234')
@@ -594,6 +624,27 @@ class CheckinReminderCronEndpointTests(APITestCase):
 		mock_send_mailgun_email.assert_not_called()
 		self.assertFalse(CheckinReminderLog.objects.filter(goal=goal, user=owner).exists())
 
+	@patch('api.views.send_mailgun_email')
+	def test_due_subtasks_are_batched_and_respect_preferences(self, mock_send_mailgun_email):
+		now = datetime(2026, 4, 25, 10, 0, 0, tzinfo=dt_timezone.utc)
+		owner = self._mk_user(email='subtask@test.com', phone='+10000000055', name='Subtask Owner')
+		goal = Goal.objects.create(user=owner, title='Quiet parent goal', is_active=False)
+		task = Task.objects.create(
+			goal=goal,
+			owner=owner,
+			title='Prepare the outline',
+			due_at=now + timedelta(days=1),
+		)
+
+		with patch('django.utils.timezone.now', return_value=now):
+			response = self.client.post(reverse('cron-checkin-reminders'))
+
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		self.assertEqual(response.data['subtasks_due_tomorrow'], 1)
+		self.assertEqual(response.data['emails_sent'], 1)
+		self.assertIn('Prepare the outline', mock_send_mailgun_email.call_args.kwargs['text'])
+		self.assertTrue(SubTaskReminderLog.objects.filter(task=task, user=owner).exists())
+
 
 class TaskVisibilityTests(APITestCase):
 	def _mk_user(self, *, email: str, phone: str, name: str, password: str = 'pass1234'):
@@ -667,6 +718,127 @@ class TaskVisibilityTests(APITestCase):
 		resp = self.client.post(list_url, data=payload, format='json')
 		self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 		self.assertIn('goal', resp.data)
+
+
+class AuthorizationBoundaryTests(APITestCase):
+	def setUp(self):
+		self.owner = User.objects.create_user(
+			email='boundary-owner@test.com', phone='+10000000101', name='Owner', password='pass1234'
+		)
+		self.partner = User.objects.create_user(
+			email='boundary-partner@test.com', phone='+10000000102', name='Partner', password='pass1234'
+		)
+		self.admin = User.objects.create_superuser(
+			email='boundary-admin@test.com', phone='+10000000103', name='Admin', password='pass1234'
+		)
+		user_a, user_b = sorted([self.owner, self.partner], key=lambda user: user.id)
+		self.partnership = Partnership.objects.create(user_a=user_a, user_b=user_b)
+		self.goal = Goal.objects.create(user=self.owner, partnership=self.partnership, title='Boundary goal')
+		self.task = Task.objects.create(
+			goal=self.goal,
+			partnership=self.partnership,
+			owner=self.owner,
+			title='Boundary task',
+		)
+		self.conversation = Conversation.objects.create(partnership=self.partnership)
+		self.conversation.members.add(self.owner, self.partner)
+		self.message = Message.objects.create(
+			conversation=self.conversation,
+			sender=self.owner,
+			text='Immutable message',
+		)
+
+	def test_partnerships_cannot_be_created_directly(self):
+		self.client.force_authenticate(user=self.owner)
+		response = self.client.post(
+			reverse('partnerships-list'),
+			data={'user_a': self.owner.id, 'user_b': self.admin.id},
+			format='json',
+		)
+		self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+	def test_partner_cannot_create_task_children_or_start_owner_timer(self):
+		self.client.force_authenticate(user=self.partner)
+
+		subtask_response = self.client.post(
+			reverse('subtasks-list'), data={'task': self.task.id, 'title': 'Injected'}, format='json'
+		)
+		evidence_response = self.client.post(
+			reverse('evidences-list'), data={'task': self.task.id, 'text': 'Injected'}, format='json'
+		)
+		timer_response = self.client.post(reverse('tasks-start-timer', kwargs={'pk': self.task.id}))
+
+		self.assertEqual(subtask_response.status_code, status.HTTP_403_FORBIDDEN)
+		self.assertEqual(evidence_response.status_code, status.HTTP_403_FORBIDDEN)
+		self.assertEqual(timer_response.status_code, status.HTTP_403_FORBIDDEN)
+
+	def test_message_and_notification_write_routes_are_disabled(self):
+		self.client.force_authenticate(user=self.partner)
+		message_response = self.client.patch(
+			reverse('messages-detail', kwargs={'pk': self.message.id}),
+			data={'text': 'Changed'},
+			format='json',
+		)
+		notification_response = self.client.post(
+			reverse('notifications-list'),
+			data={'user': self.owner.id, 'type': 'forged', 'payload': {}},
+			format='json',
+		)
+
+		self.assertEqual(message_response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+		self.assertEqual(notification_response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+	def test_evidence_review_fields_are_server_controlled(self):
+		self.client.force_authenticate(user=self.owner)
+		response = self.client.post(
+			reverse('evidences-list'),
+			data={
+				'task': self.task.id,
+				'text': 'Progress',
+				'approved': True,
+				'reviewer': self.partner.id,
+			},
+			format='json',
+		)
+
+		self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+		evidence = Evidence.objects.get(id=response.data['id'])
+		self.assertIsNone(evidence.approved)
+		self.assertIsNone(evidence.reviewer_id)
+
+	def test_waitlist_export_requires_admin(self):
+		anonymous_response = self.client.get(reverse('waitlist-download-waitlist'))
+		self.assertEqual(anonymous_response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+		self.client.force_authenticate(user=self.admin)
+		admin_response = self.client.get(reverse('waitlist-download-waitlist'))
+		self.assertEqual(admin_response.status_code, status.HTTP_200_OK)
+
+	def test_goal_cannot_attach_to_an_unrelated_conversation(self):
+		stranger = User.objects.create_user(
+			email='boundary-stranger@test.com',
+			phone='+10000000104',
+			name='Stranger',
+			password='pass1234',
+		)
+		self.client.force_authenticate(user=stranger)
+
+		response = self.client.post(
+			reverse('goals-list'),
+			data={
+				'title': 'Injected goal',
+				'description': '',
+				'conversation': self.conversation.id,
+				'checkin_frequency': 'WEEKLY',
+				'is_active': True,
+				'is_public': False,
+				'status': 'active',
+			},
+			format='json',
+		)
+
+		self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+		self.assertFalse(Goal.objects.filter(title='Injected goal').exists())
 
 
 class ForgotPasswordFlowTests(APITestCase):
@@ -1004,6 +1176,27 @@ class NotificationPreferenceTests(APITestCase):
 			).exists()
 		)
 
+	def test_app_wide_presence_suppresses_notification_outside_chat(self):
+		sender = self._mk_user(email='app-sender@test.com', phone='+10000000095', name='Sender')
+		recipient = self._mk_user(email='app-online@test.com', phone='+10000000096', name='Online')
+		conversation = Conversation.objects.create(is_group=True, name='App Presence')
+		conversation.members.add(sender, recipient)
+		cache.set(
+			'presence:global:online_user_ids',
+			{str(recipient.id): {'app-channel': timezone.now().isoformat()}},
+			timeout=90,
+		)
+
+		message = Message.objects.create(conversation=conversation, sender=sender, text='Seen in app')
+
+		self.assertFalse(
+			Notification.objects.filter(
+				user=recipient,
+				type='new_message',
+				payload__message_id=message.id,
+			).exists()
+		)
+
 	def test_stale_presence_and_cache_failure_fall_back_to_notification(self):
 		sender = self._mk_user(email='fallback-sender@test.com', phone='+10000000092', name='Sender')
 		stale_recipient = self._mk_user(email='stale-recipient@test.com', phone='+10000000093', name='Stale')
@@ -1100,7 +1293,7 @@ class GoalSharingEndpointsTests(APITestCase):
 		goal.refresh_from_db()
 		self.assertIsNotNone(goal.shared_id)
 		self.assertIsNotNone(goal.invite_link)
-		self.assertIn('/goals/?shared_id=', goal.invite_link)
+		self.assertIn(f'/goals/{goal.id}/preview?shared_id=', goal.invite_link)
 
 	def test_join_goal_adds_member_and_creates_group_conversation(self):
 		goal = Goal.objects.create(user=self.owner, title='Joinable goal', is_public=True)
@@ -1143,6 +1336,12 @@ class GoalSharingEndpointsTests(APITestCase):
 		self.assertIn(self.member.name, text)
 		self.assertIn(f'https://app.padlupp.com/goals/{goal.id}', text)
 
+	@override_settings(
+		EMAIL_NOTIFICATIONS_ENABLED=True,
+		MAILGUN_API_KEY='test',
+		MAILGUN_DOMAIN='test',
+		MAILGUN_FROM_EMAIL='no-reply@test.com',
+	)
 	@patch('api.viewsets.send_mailgun_email')
 	def test_share_goal_adds_existing_users_and_invites_unknown_emails(self, mock_send_mailgun_email):
 		goal = Goal.objects.create(user=self.owner, title='Shared goal', is_public=True)
@@ -1308,3 +1507,199 @@ class ConversationFeatureEndpointsTests(APITestCase):
 		self.assertEqual(resp.status_code, status.HTTP_200_OK)
 		self.assertEqual(resp.data['user']['id'], self.partner.id)
 		self.assertIn('profile', resp.data)
+
+
+@override_settings(EMAIL_NOTIFICATIONS_ENABLED=False)
+class V3FeatureTests(APITestCase):
+	def setUp(self):
+		self.owner = User.objects.create(email='v3-owner@test.com', phone='+19990000001', name='V3 Owner')
+		self.member = User.objects.create(email='v3-member@test.com', phone='+19990000002', name='V3 Member')
+		self.stranger = User.objects.create(email='v3-stranger@test.com', phone='+19990000003', name='V3 Stranger')
+		Profile.objects.update_or_create(
+			user=self.owner,
+			defaults={'experience': 'Building products', 'interests': 'Productivity,Coding'},
+		)
+		Profile.objects.update_or_create(
+			user=self.member,
+			defaults={'experience': 'Building products', 'interests': 'Productivity,Writing'},
+		)
+		self.goal = Goal.objects.create(user=self.owner, title='Shared V3 goal', is_public=True)
+		GoalMembership.objects.get_or_create(goal=self.goal, user=self.owner, defaults={'added_by': self.owner})
+		GoalMembership.objects.get_or_create(goal=self.goal, user=self.member, defaults={'added_by': self.owner})
+		self.conversation = Conversation.objects.get(goal=self.goal)
+
+	def test_incomplete_profile_cannot_create_goal(self):
+		self.client.force_authenticate(user=self.stranger)
+		response = self.client.post(reverse('goals-list'), data={
+			'title': 'Blocked goal',
+			'description': '',
+			'checkin_frequency': 'WEEKLY',
+			'is_active': True,
+			'is_public': False,
+			'status': 'planned',
+		}, format='json')
+		self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+		self.assertIn('profile', response.data)
+
+	def test_goal_member_can_edit_shared_goal(self):
+		self.client.force_authenticate(user=self.member)
+		response = self.client.patch(
+			reverse('goals-detail', kwargs={'pk': self.goal.id}),
+			data={'title': 'Renamed by member'},
+			format='json',
+		)
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		self.goal.refresh_from_db()
+		self.assertEqual(self.goal.title, 'Renamed by member')
+
+	def test_only_owner_can_change_goal_visibility(self):
+		self.client.force_authenticate(user=self.member)
+		response = self.client.patch(
+			reverse('goals-detail', kwargs={'pk': self.goal.id}),
+			data={'is_public': False},
+			format='json',
+		)
+		self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+		self.goal.refresh_from_db()
+		self.assertTrue(self.goal.is_public)
+
+	def test_joined_goal_member_can_create_and_list_subtasks(self):
+		self.client.force_authenticate(user=self.member)
+		create_response = self.client.post(reverse('tasks-list'), data={
+			'goal': self.goal.id,
+			'title': 'Member subtask',
+			'status': Task.STATUS_PLANNED,
+		}, format='json')
+		self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+
+		list_response = self.client.get(reverse('tasks-list'))
+		rows = list_response.data.get('results', list_response.data) if isinstance(list_response.data, dict) else list_response.data
+		self.assertIn(create_response.data['id'], [row['id'] for row in rows])
+
+	def test_only_owner_can_invite_goal_members(self):
+		self.client.force_authenticate(user=self.member)
+		response = self.client.post(
+			reverse('goals-share', kwargs={'pk': self.goal.id}),
+			data={'emails': [self.stranger.email]},
+			format='json',
+		)
+		self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+	def test_public_preview_requires_exact_share_id(self):
+		self.client.force_authenticate(user=None)
+		url = reverse('goals-public-preview', kwargs={'pk': self.goal.id})
+		bad = self.client.get(url, {'shared_id': '00000000-0000-0000-0000-000000000000'})
+		malformed = self.client.get(url, {'shared_id': 'not-a-uuid'})
+		good = self.client.get(url, {'shared_id': str(self.goal.shared_id)})
+		self.assertEqual(bad.status_code, status.HTTP_404_NOT_FOUND)
+		self.assertEqual(malformed.status_code, status.HTTP_404_NOT_FOUND)
+		self.assertEqual(good.status_code, status.HTTP_200_OK)
+		self.assertEqual(good.data['owner']['name'], self.owner.name)
+		self.assertNotIn('email', good.data['owner'])
+
+	def test_archiving_is_per_user_and_can_be_restored(self):
+		self.client.force_authenticate(user=self.member)
+		archive_url = reverse('conversations-archive', kwargs={'pk': self.conversation.id})
+		self.assertEqual(self.client.post(archive_url).status_code, status.HTTP_200_OK)
+		active_rows = self.client.get(reverse('conversations-list')).data
+		active_rows = active_rows.get('results', active_rows) if isinstance(active_rows, dict) else active_rows
+		self.assertNotIn(self.conversation.id, [row['id'] for row in active_rows])
+		archived_rows = self.client.get(reverse('conversations-archived')).data
+		archived_rows = archived_rows.get('results', archived_rows) if isinstance(archived_rows, dict) else archived_rows
+		self.assertIn(self.conversation.id, [row['id'] for row in archived_rows])
+
+		self.client.force_authenticate(user=self.owner)
+		owner_rows = self.client.get(reverse('conversations-list')).data
+		owner_rows = owner_rows.get('results', owner_rows) if isinstance(owner_rows, dict) else owner_rows
+		self.assertIn(self.conversation.id, [row['id'] for row in owner_rows])
+
+	def test_only_sender_can_recall_inside_window(self):
+		message = Message.objects.create(conversation=self.conversation, sender=self.owner, text='Recall me')
+		url = reverse('messages-recall', kwargs={'pk': message.id})
+		self.client.force_authenticate(user=self.member)
+		self.assertEqual(self.client.post(url).status_code, status.HTTP_403_FORBIDDEN)
+		self.client.force_authenticate(user=self.owner)
+		response = self.client.post(url)
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		self.assertTrue(response.data['is_recalled'])
+		self.assertEqual(response.data['text'], '')
+		self.assertNotIn('email', response.data['sender'])
+
+	def test_system_messages_cannot_be_recalled(self):
+		message = Message.objects.create(
+			conversation=self.conversation,
+			sender=self.owner,
+			kind=Message.KIND_CHECKIN,
+			metadata={'goal_id': self.goal.id},
+		)
+		self.client.force_authenticate(user=self.owner)
+		response = self.client.post(reverse('messages-recall', kwargs={'pk': message.id}))
+		self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+	def test_recall_window_expires(self):
+		message = Message.objects.create(conversation=self.conversation, sender=self.owner, text='Too old')
+		Message.objects.filter(id=message.id).update(created_at=timezone.now() - timedelta(minutes=16))
+		self.client.force_authenticate(user=self.owner)
+		response = self.client.post(reverse('messages-recall', kwargs={'pk': message.id}))
+		self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+	def test_checkins_create_chat_card_reaction_and_badge(self):
+		today = timezone.localdate()
+		payload = {
+			'goal': self.goal.id,
+			'scheduled_for': today.isoformat(),
+			'status': 'completed',
+			'completion_percent': 100,
+			'update_text': 'Done for today',
+		}
+		self.client.force_authenticate(user=self.owner)
+		owner_response = self.client.post(reverse('checkins-list'), data=payload, format='multipart')
+		self.assertEqual(owner_response.status_code, status.HTTP_201_CREATED)
+		self.client.force_authenticate(user=self.member)
+		member_response = self.client.post(reverse('checkins-list'), data=payload, format='multipart')
+		self.assertEqual(member_response.status_code, status.HTTP_201_CREATED)
+		self.assertTrue(GoalCheckinBadge.objects.filter(goal=self.goal, scheduled_for=today).exists())
+		self.assertTrue(Message.objects.filter(conversation=self.conversation, kind=Message.KIND_CHECKIN).exists())
+
+		reaction_response = self.client.post(
+			reverse('checkins-react', kwargs={'pk': owner_response.data['id']}),
+			data={'reaction': 'celebrate'},
+			format='json',
+		)
+		self.assertEqual(reaction_response.status_code, status.HTTP_200_OK)
+		self.assertEqual(len(reaction_response.data['reactions']), 1)
+
+	def test_checkin_view_once_evidence_is_private_and_consumed(self):
+		self.client.force_authenticate(user=self.owner)
+		response = self.client.post(reverse('checkins-list'), data={
+			'goal': self.goal.id,
+			'scheduled_for': timezone.localdate().isoformat(),
+			'status': 'partial',
+			'completion_percent': 50,
+			'evidence': SimpleUploadedFile('proof.png', b'proof', content_type='image/png'),
+			'evidence_view_once': True,
+		}, format='multipart')
+		self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+		url = reverse('checkins-evidence', kwargs={'pk': response.data['id']})
+
+		self.client.force_authenticate(user=self.stranger)
+		self.assertEqual(self.client.get(url).status_code, status.HTTP_404_NOT_FOUND)
+		self.client.force_authenticate(user=self.member)
+		first = self.client.get(url)
+		self.assertEqual(first.status_code, status.HTTP_200_OK)
+		first.close()
+		self.assertEqual(self.client.get(url).status_code, status.HTTP_410_GONE)
+
+	def test_checkin_history_cannot_be_deleted(self):
+		checkin = GoalCheckin.objects.create(
+			goal=self.goal,
+			user=self.owner,
+			scheduled_for=timezone.localdate(),
+			status=GoalCheckin.STATUS_COMPLETED,
+			completion_percent=100,
+			submitted_at=timezone.now(),
+		)
+		self.client.force_authenticate(user=self.owner)
+		response = self.client.delete(reverse('checkins-detail', kwargs={'pk': checkin.id}))
+		self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+		self.assertTrue(GoalCheckin.objects.filter(id=checkin.id).exists())

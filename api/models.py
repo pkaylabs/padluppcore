@@ -1,6 +1,7 @@
 import uuid
 
 from django.conf import settings
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
 from padluppcore.utils.constants import StatusEnum
@@ -10,8 +11,8 @@ from padluppcore.utils.models import TimeStampedModel
 def build_goal_invite_link(shared_id, goal_id: int = None) -> str:
 	base_url = (getattr(settings, 'PADLUPP_APP_URL', '') or 'https://app.padlupp.com').rstrip('/')
 	if goal_id is not None:
-		return f'{base_url}/goals/?shared_id={shared_id}&goal_id={goal_id}'
-	return f'{base_url}/goals/?shared_id={shared_id}'
+		return f'{base_url}/goals/{goal_id}/preview?shared_id={shared_id}'
+	return f'{base_url}/goals'
 
 
 class Profile(TimeStampedModel):
@@ -78,9 +79,15 @@ class Goal(TimeStampedModel):
 		if self.is_public:
 			if not self.shared_id:
 				self.shared_id = uuid.uuid4()
-			if not self.invite_link and self.shared_id:
-				self.invite_link = build_goal_invite_link(self.shared_id, goal_id=self.id)
+		else:
+			self.shared_id = None
+			self.invite_link = None
 		super().save(*args, **kwargs)
+		if self.is_public and self.shared_id:
+			invite_link = build_goal_invite_link(self.shared_id, goal_id=self.id)
+			if self.invite_link != invite_link:
+				type(self).objects.filter(pk=self.pk).update(invite_link=invite_link)
+				self.invite_link = invite_link
 
 
 class GoalMembership(TimeStampedModel):
@@ -197,6 +204,7 @@ class SubTask(TimeStampedModel):
 	owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='subtasks', null=True, blank=True)
 	title = models.CharField(max_length=255)
 	description = models.TextField(blank=True)
+	due_at = models.DateTimeField(null=True, blank=True)
 	status = models.CharField(max_length=20, choices=Task.STATUS_CHOICES, default=Task.STATUS_PLANNED)
 
 
@@ -287,6 +295,109 @@ class CheckinReminderLog(TimeStampedModel):
 		]
 
 
+class SubTaskReminderLog(TimeStampedModel):
+	"""Tracks reminder delivery for one subtask and recipient."""
+
+	task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='reminder_logs')
+	user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='subtask_reminder_logs')
+	reminder_for_date = models.DateField()
+
+	class Meta:
+		constraints = [
+			models.UniqueConstraint(
+				fields=['task', 'user', 'reminder_for_date'],
+				name='uniq_subtask_user_reminder_for_date',
+			),
+		]
+		indexes = [models.Index(fields=['reminder_for_date'])]
+
+
+class GoalCheckin(TimeStampedModel):
+	STATUS_PENDING = 'pending'
+	STATUS_COMPLETED = 'completed'
+	STATUS_PARTIAL = 'partial'
+	STATUS_BLOCKED = 'blocked'
+	STATUS_MISSED = 'missed'
+	STATUS_CHOICES = [
+		(STATUS_PENDING, 'Pending'),
+		(STATUS_COMPLETED, 'Completed'),
+		(STATUS_PARTIAL, 'Partially completed'),
+		(STATUS_BLOCKED, 'Blocked'),
+		(STATUS_MISSED, 'Missed'),
+	]
+
+	goal = models.ForeignKey(Goal, on_delete=models.CASCADE, related_name='checkins')
+	user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='goal_checkins')
+	scheduled_for = models.DateField()
+	status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+	completion_percent = models.PositiveSmallIntegerField(
+		default=0,
+		validators=[MinValueValidator(0), MaxValueValidator(100)],
+	)
+	update_text = models.TextField(blank=True)
+	blocker = models.TextField(blank=True)
+	evidence = models.FileField(upload_to='checkin_evidence/', null=True, blank=True)
+	evidence_view_once = models.BooleanField(default=False)
+	evidence_expires_at = models.DateTimeField(null=True, blank=True)
+	submitted_at = models.DateTimeField(null=True, blank=True)
+
+	class Meta:
+		constraints = [
+			models.UniqueConstraint(
+				fields=['goal', 'user', 'scheduled_for'],
+				name='uniq_goal_user_checkin_date',
+			),
+		]
+		indexes = [
+			models.Index(fields=['goal', '-scheduled_for']),
+			models.Index(fields=['user', '-scheduled_for']),
+		]
+
+
+class GoalCheckinEvidenceView(TimeStampedModel):
+	checkin = models.ForeignKey(GoalCheckin, on_delete=models.CASCADE, related_name='evidence_views')
+	user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='checkin_evidence_views')
+
+	class Meta:
+		constraints = [
+			models.UniqueConstraint(fields=['checkin', 'user'], name='uniq_checkin_evidence_viewer'),
+		]
+
+
+class GoalCheckinReaction(TimeStampedModel):
+	REACTION_SUPPORT = 'support'
+	REACTION_CELEBRATE = 'celebrate'
+	REACTION_CHOICES = [
+		(REACTION_SUPPORT, 'Support'),
+		(REACTION_CELEBRATE, 'Celebrate'),
+	]
+
+	checkin = models.ForeignKey(GoalCheckin, on_delete=models.CASCADE, related_name='reactions')
+	user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='checkin_reactions')
+	reaction = models.CharField(max_length=20, choices=REACTION_CHOICES)
+
+	class Meta:
+		constraints = [
+			models.UniqueConstraint(fields=['checkin', 'user'], name='uniq_checkin_reaction_user'),
+		]
+
+
+class GoalCheckinBadge(TimeStampedModel):
+	BADGE_FULL_PARTICIPATION = 'full_participation'
+
+	goal = models.ForeignKey(Goal, on_delete=models.CASCADE, related_name='checkin_badges')
+	scheduled_for = models.DateField()
+	badge_type = models.CharField(max_length=40, default=BADGE_FULL_PARTICIPATION)
+
+	class Meta:
+		constraints = [
+			models.UniqueConstraint(
+				fields=['goal', 'scheduled_for', 'badge_type'],
+				name='uniq_goal_checkin_badge_date_type',
+			),
+		]
+
+
 class Conversation(TimeStampedModel):
 	partnership = models.OneToOneField(Partnership, on_delete=models.CASCADE, related_name='conversation', null=True, blank=True)
 	goal = models.OneToOneField(Goal, on_delete=models.CASCADE, related_name='conversation', null=True, blank=True)
@@ -299,6 +410,7 @@ class ConversationMembership(TimeStampedModel):
 	conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name='conversation_memberships')
 	user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='conversation_memberships')
 	added_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, related_name='added_conversation_memberships', null=True, blank=True)
+	archived_at = models.DateTimeField(null=True, blank=True)
 
 	class Meta:
 		constraints = [
@@ -310,6 +422,15 @@ class ConversationMembership(TimeStampedModel):
 
 
 class Message(TimeStampedModel):
+	KIND_USER = 'user'
+	KIND_GOAL = 'goal'
+	KIND_CHECKIN = 'checkin'
+	KIND_CHOICES = [
+		(KIND_USER, 'User message'),
+		(KIND_GOAL, 'Goal event'),
+		(KIND_CHECKIN, 'Check-in event'),
+	]
+
 	conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name='messages')
 	sender = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='messages')
 	text = models.TextField(blank=True, default='')
@@ -320,6 +441,9 @@ class Message(TimeStampedModel):
 	attachment_mime = models.CharField(max_length=100, blank=True, default='')
 	attachment_size = models.PositiveIntegerField(null=True, blank=True)
 	is_read = models.BooleanField(default=False)
+	recalled_at = models.DateTimeField(null=True, blank=True)
+	kind = models.CharField(max_length=20, choices=KIND_CHOICES, default=KIND_USER)
+	metadata = models.JSONField(default=dict, blank=True)
 
 
 class Waitlister(TimeStampedModel):

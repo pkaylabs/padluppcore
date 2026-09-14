@@ -19,8 +19,12 @@ from knox.auth import TokenAuthentication
 
 from accounts.models import User
 from .models import Conversation, Message
-from .presence import PRESENCE_STALE_SECONDS as DEFAULT_PRESENCE_STALE_SECONDS, presence_cache_key
-from .serializers import MessageSerializer, UserSerializer
+from .presence import (
+    PRESENCE_STALE_SECONDS as DEFAULT_PRESENCE_STALE_SECONDS,
+    presence_cache_key,
+    set_global_presence,
+)
+from .serializers import MessageSerializer, PublicUserSerializer
 
 
 class _ScopeRequest:
@@ -108,12 +112,17 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def get_user_conversations_payload(self, user_id: int):
         # Import locally to avoid circular imports at module load.
-        from django.db.models import Q
-		
+        from django.db.models import Exists, OuterRef, Q
+        from .models import ConversationMembership
+
         convs = list(
             Conversation.objects.select_related('partnership', 'partnership__user_a', 'partnership__user_b', 'goal')
             .prefetch_related('members')
             .filter(Q(members__id=user_id) | Q(partnership__user_a_id=user_id) | Q(partnership__user_b_id=user_id) | Q(goal__members__id=user_id))
+            .annotate(archived_for_user=Exists(ConversationMembership.objects.filter(
+                conversation_id=OuterRef('pk'), user_id=user_id, archived_at__isnull=False,
+            )))
+            .filter(archived_for_user=False)
             .distinct()
             .order_by('-created_at')
         )
@@ -141,7 +150,7 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
                 partner_data = {'name': conv.goal.title, 'avatar': None}
             elif conv.partnership_id:
                 partner_user = conv.partnership.user_b if conv.partnership.user_a_id == user_id else conv.partnership.user_a
-                partner_data = UserSerializer(partner_user, context={'request': self.serializer_request}).data if partner_user else {}
+                partner_data = PublicUserSerializer(partner_user, context={'request': self.serializer_request}).data if partner_user else {}
             elif member_users:
                 partner_data = {'name': ', '.join([u.name for u in member_users]), 'avatar': None}
             else:
@@ -176,6 +185,83 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
                 }
             )
         return result
+
+    @database_sync_to_async
+    def get_user_from_token(self, token):
+        auth = TokenAuthentication()
+        try:
+            user_auth_tuple = auth.authenticate_credentials(token.encode())
+        except Exception:
+            return None
+        return user_auth_tuple[0] if user_auth_tuple else None
+
+    async def authenticate_user(self):
+        query_string = self.scope.get('query_string', b'').decode()
+        params = parse_qs(query_string)
+        token = (params.get('token') or [None])[0]
+        if not token:
+            return None
+        user = await self.get_user_from_token(token)
+        if user and user.is_authenticated:
+            self.scope['user'] = user
+            return user
+        return None
+
+
+class AppPresenceConsumer(AsyncWebsocketConsumer):
+    """Authenticated app-wide heartbeat used for notification decisions."""
+
+    HEARTBEAT_SECONDS = 30
+
+    async def connect(self):
+        user = await self.authenticate_user()
+        if not user:
+            await self.close()
+            return
+
+        self.user = user
+        await self.accept()
+        await self.set_online(True)
+        self._heartbeat_task = asyncio.create_task(self._heartbeat())
+
+    async def disconnect(self, close_code):
+        heartbeat_task = getattr(self, '_heartbeat_task', None)
+        if heartbeat_task:
+            heartbeat_task.cancel()
+        user = getattr(self, 'user', None)
+        if user:
+            still_online = await self.set_online(False)
+            if not still_online:
+                await self.update_last_seen(user.id)
+
+    async def receive(self, text_data=None, bytes_data=None):
+        if text_data:
+            try:
+                payload = json.loads(text_data)
+            except (TypeError, ValueError):
+                return
+            if payload.get('type') == 'heartbeat':
+                await self.set_online(True)
+
+    async def _heartbeat(self):
+        try:
+            while True:
+                await asyncio.sleep(self.HEARTBEAT_SECONDS)
+                await self.set_online(True)
+        except asyncio.CancelledError:
+            return
+
+    @database_sync_to_async
+    def set_online(self, online: bool) -> bool:
+        return set_global_presence(
+            self.user.id,
+            self.channel_name,
+            online,
+        )
+
+    @database_sync_to_async
+    def update_last_seen(self, user_id: int):
+        User.objects.filter(id=user_id).update(last_seen_at=timezone.now())
 
     @database_sync_to_async
     def get_user_from_token(self, token):
@@ -549,6 +635,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def get_conversation_payload_for_user(self, conversation_id: int, user_id: int):
+        if ConversationMembership.objects.filter(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            archived_at__isnull=False,
+        ).exists():
+            return None
         try:
             conv = Conversation.objects.select_related('partnership', 'partnership__user_a', 'partnership__user_b', 'goal').prefetch_related('members').get(id=conversation_id)
         except Conversation.DoesNotExist:
@@ -558,7 +650,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             partner_data = {'name': conv.goal.title, 'avatar': None}
         elif conv.partnership_id:
             partner_user = conv.partnership.user_b if conv.partnership.user_a_id == user_id else conv.partnership.user_a
-            partner_data = UserSerializer(partner_user, context={'request': self.serializer_request}).data if partner_user else {}
+            partner_data = PublicUserSerializer(partner_user, context={'request': self.serializer_request}).data if partner_user else {}
         elif member_users:
             partner_data = {'name': ', '.join([u.name for u in member_users]), 'avatar': None}
         else:
@@ -599,6 +691,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def chat_message(self, event):
         # Backward-compatible: message payload is sent as the serialized dict.
         await self.send(text_data=json.dumps(event['message']))
+
+    async def chat_message_updated(self, event):
+        await self.send_json({'type': 'message_updated', 'message': event['message']})
 
     async def chat_typing(self, event):
         try:

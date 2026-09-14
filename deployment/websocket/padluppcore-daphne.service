@@ -1,0 +1,50 @@
+# Systemd service for Uvicorn serving the padluppcore ASGI app
+
+[Unit]
+Description=Uvicorn server for padluppcore (ASGI + WebSockets)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=padlupp-app
+Group=www-data
+WorkingDirectory=/padlupp/padluppcore
+EnvironmentFile=/etc/padluppcore/app.env
+Environment="DJANGO_ENV_FILE=/etc/padluppcore/app.env"
+Environment="DJANGO_SETTINGS_MODULE=padluppcore.settings"
+Environment="PYTHONUNBUFFERED=1"
+UMask=0027
+
+ExecStart=/padlupp/padluppcore/venv/bin/python -m uvicorn padluppcore.asgi:application --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-access-log
+
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=true
+PrivateTmp=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/padlupp
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
