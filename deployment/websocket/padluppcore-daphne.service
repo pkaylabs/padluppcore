@@ -16,7 +16,7 @@ Environment="DJANGO_SETTINGS_MODULE=padluppcore.settings"
 Environment="PYTHONUNBUFFERED=1"
 UMask=0027
 
-ExecStart=/padlupp/padluppcore/venv/bin/python -m uvicorn padluppcore.asgi:application --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-access-log
+ExecStart=/padlupp/padluppcore/venv/bin/python -m uvicorn padluppcore.asgi:application --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-access-log --log-level warning
 
 Restart=always
 RestartSec=5
