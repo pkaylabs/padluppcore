@@ -25,6 +25,7 @@ from .models import (
 	TimerSession,
 	Evidence,
 	Notification,
+	DevicePushToken,
 	Conversation,
 	ConversationMembership,
 	GoalCheckin,
@@ -89,6 +90,16 @@ class NotificationPreferencesSerializer(serializers.ModelSerializer):
 			'notify_on_new_match',
 			'notify_on_reminders',
 		]
+
+
+class DevicePushTokenRegisterSerializer(serializers.Serializer):
+	token = serializers.CharField(max_length=512, trim_whitespace=True)
+	platform = serializers.ChoiceField(choices=DevicePushToken.PLATFORM_CHOICES)
+	device_id = serializers.CharField(max_length=255, trim_whitespace=True)
+
+
+class DevicePushTokenUnregisterSerializer(serializers.Serializer):
+	token = serializers.CharField(max_length=512, trim_whitespace=True)
 
 
 class UserUpdateRequestSerializer(serializers.Serializer):

@@ -27,7 +27,7 @@ from padluppcore.utils.email import EmailSendError, send_mailgun_email
 from .activity import dt_to_local_date, get_user_tzinfo, record_user_activity
 
 from accounts.models import AccountDeletionRequest, PasswordResetOTP, User
-from .models import BuddyRequest, Conversation, ConversationMembership, Evidence, Event, Goal, GoalCheckin, GoalCheckinBadge, GoalCheckinEvidenceView, GoalCheckinReaction, GoalMembership, Match, Message, Notification, Partnership, Profile, SubTask, Task, TimerSession, UserDailyActivity, Waitlister
+from .models import BuddyRequest, Conversation, ConversationMembership, DevicePushToken, Evidence, Event, Goal, GoalCheckin, GoalCheckinBadge, GoalCheckinEvidenceView, GoalCheckinReaction, GoalMembership, Match, Message, Notification, Partnership, Profile, SubTask, Task, TimerSession, UserDailyActivity, Waitlister
 from .matching import compatibility_details, profile_is_complete
 from .serializers import (
 	BuddyConnectSerializer,
@@ -80,6 +80,8 @@ from .serializers import (
 	LoginResponseSerializer,
 	UserUpdateRequestSerializer,
 	NotificationPreferencesSerializer,
+	DevicePushTokenRegisterSerializer,
+	DevicePushTokenUnregisterSerializer,
 )
 
 
@@ -2317,6 +2319,52 @@ class GoalCheckinViewSet(viewsets.ModelViewSet):
 		response['Pragma'] = 'no-cache'
 		response['X-Content-Type-Options'] = 'nosniff'
 		return response
+
+
+class DevicePushTokenViewSet(viewsets.GenericViewSet):
+	permission_classes = [permissions.IsAuthenticated]
+	serializer_class = DevicePushTokenRegisterSerializer
+
+	@extend_schema(
+		request=DevicePushTokenRegisterSerializer,
+		responses={200: DetailResponseSerializer},
+		description='Register or refresh a mobile push token for the current user.',
+	)
+	@action(detail=False, methods=['post'])
+	def register(self, request):
+		serializer = DevicePushTokenRegisterSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		data = serializer.validated_data
+		with transaction.atomic():
+			DevicePushToken.objects.filter(token=data['token']).exclude(
+				user=request.user,
+				device_id=data['device_id'],
+			).delete()
+			DevicePushToken.objects.update_or_create(
+				user=request.user,
+				device_id=data['device_id'],
+				defaults={
+					'token': data['token'],
+					'platform': data['platform'],
+					'is_active': True,
+				},
+			)
+		return Response({'detail': 'Device registered.'})
+
+	@extend_schema(
+		request=DevicePushTokenUnregisterSerializer,
+		responses={200: DetailResponseSerializer},
+		description='Deactivate a mobile push token owned by the current user.',
+	)
+	@action(detail=False, methods=['post'])
+	def unregister(self, request):
+		serializer = DevicePushTokenUnregisterSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		DevicePushToken.objects.filter(
+			user=request.user,
+			token=serializer.validated_data['token'],
+		).update(is_active=False)
+		return Response({'detail': 'Device unregistered.'})
 
 
 class NotificationViewSet(viewsets.ReadOnlyModelViewSet):

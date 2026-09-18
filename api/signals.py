@@ -15,6 +15,7 @@ from padluppcore.utils.email import EmailSendError, send_mailgun_email
 from .activity import record_user_activity
 from .models import Conversation, ConversationMembership, Evidence, Goal, GoalMembership, Message, Notification, Task, TimerSession
 from .presence import get_globally_online_user_ids, get_online_user_ids
+from .push import enqueue_notification_push
 from .serializers import MessageSerializer
 
 logger = logging.getLogger(__name__)
@@ -430,3 +431,13 @@ def email_notification_created(sender, instance: Notification, created: bool, **
             logger.exception('Unexpected error sending notification email')
 
     transaction.on_commit(_send_after_commit)
+
+
+@receiver(post_save, sender=Notification)
+def push_notification_created(sender, instance: Notification, created: bool, **kwargs):
+    if kwargs.get('raw') or not created:
+        return
+    user = getattr(instance, 'user', None)
+    if not user or not _notification_preference_enabled(user, instance.type):
+        return
+    transaction.on_commit(lambda notification_id=instance.id: enqueue_notification_push(notification_id))

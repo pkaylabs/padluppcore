@@ -16,13 +16,116 @@ from django.utils import timezone
 from datetime import datetime, timezone as dt_timezone, timedelta
 
 from accounts.models import User
-from api.models import BuddyRequest, Partnership, Profile, Conversation, ConversationMembership, Message, Goal, GoalCheckin, GoalCheckinBadge, GoalMembership, Match, Task, TimerSession, Evidence, Notification, UserDailyActivity, InactivityNudgeLog, CheckinReminderLog, SubTaskReminderLog, Waitlister
+from api.models import BuddyRequest, DevicePushToken, Partnership, Profile, Conversation, ConversationMembership, Message, Goal, GoalCheckin, GoalCheckinBadge, GoalMembership, Match, Task, TimerSession, Evidence, Notification, UserDailyActivity, InactivityNudgeLog, CheckinReminderLog, SubTaskReminderLog, Waitlister
 from api.serializers import UserSerializer, MessageSerializer
 from api.consumers import _ScopeRequest
 from django.core.files.uploadedfile import SimpleUploadedFile
 from padluppcore.utils.email import EmailSendError
 from asgiref.sync import async_to_sync
 from api.consumers import ChatConsumer
+from api.push import send_notification_push
+
+
+@override_settings(EMAIL_NOTIFICATIONS_ENABLED=False, FIREBASE_PUSH_ENABLED=False)
+class DevicePushTokenTests(APITestCase):
+	def setUp(self):
+		self.user = User.objects.create_user(
+			email='mobile@test.com',
+			phone='+19990000001',
+			name='Mobile User',
+			password='pass1234',
+		)
+		self.other = User.objects.create_user(
+			email='other-mobile@test.com',
+			phone='+19990000002',
+			name='Other Mobile User',
+			password='pass1234',
+		)
+		self.client.force_authenticate(user=self.user)
+
+	def test_register_refresh_and_unregister_device(self):
+		register_url = reverse('device-tokens-register')
+		response = self.client.post(
+			register_url,
+			{'token': 'token-one', 'platform': 'android', 'device_id': 'device-1'},
+			format='json',
+		)
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		device = DevicePushToken.objects.get(user=self.user, device_id='device-1')
+		self.assertTrue(device.is_active)
+
+		response = self.client.post(
+			register_url,
+			{'token': 'token-two', 'platform': 'android', 'device_id': 'device-1'},
+			format='json',
+		)
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		self.assertEqual(DevicePushToken.objects.filter(user=self.user).count(), 1)
+		device.refresh_from_db()
+		self.assertEqual(device.token, 'token-two')
+
+		response = self.client.post(
+			reverse('device-tokens-unregister'),
+			{'token': 'token-two'},
+			format='json',
+		)
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		device.refresh_from_db()
+		self.assertFalse(device.is_active)
+
+	def test_token_moves_to_new_authenticated_owner(self):
+		DevicePushToken.objects.create(
+			user=self.other,
+			token='shared-fcm-token',
+			platform='ios',
+			device_id='old-install',
+		)
+		response = self.client.post(
+			reverse('device-tokens-register'),
+			{'token': 'shared-fcm-token', 'platform': 'ios', 'device_id': 'new-install'},
+			format='json',
+		)
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		self.assertFalse(DevicePushToken.objects.filter(user=self.other).exists())
+		self.assertTrue(DevicePushToken.objects.filter(user=self.user, token='shared-fcm-token').exists())
+
+	@patch('api.signals.enqueue_notification_push')
+	def test_notification_signal_respects_user_preference(self, mock_enqueue):
+		with self.captureOnCommitCallbacks(execute=True):
+			Notification.objects.create(user=self.user, type='new_message', payload={})
+		mock_enqueue.assert_called_once()
+
+		mock_enqueue.reset_mock()
+		self.user.notify_on_new_message = False
+		self.user.save(update_fields=['notify_on_new_message'])
+		with self.captureOnCommitCallbacks(execute=True):
+			Notification.objects.create(user=self.user, type='new_message', payload={})
+		mock_enqueue.assert_not_called()
+
+	@patch('api.push._access_token', return_value=('oauth-token', 'firebase-project'))
+	@patch('api.push.requests.post')
+	def test_push_delivery_uses_fcm_v1_payload(self, mock_post, _mock_access_token):
+		DevicePushToken.objects.create(
+			user=self.user,
+			token='fcm-device-token',
+			platform='android',
+			device_id='device-1',
+		)
+		notification = Notification.objects.create(
+			user=self.user,
+			type='new_message',
+			payload={'sender_name': 'Buddy', 'preview': 'Keep going', 'conversation_id': 42},
+		)
+		mock_post.return_value.ok = True
+
+		send_notification_push(notification.id)
+
+		request = mock_post.call_args
+		self.assertIn('/v1/projects/firebase-project/messages:send', request.args[0])
+		message = request.kwargs['json']['message']
+		self.assertEqual(message['token'], 'fcm-device-token')
+		self.assertEqual(message['notification']['title'], 'New message from Buddy')
+		self.assertEqual(message['data']['path'], '/messages/42')
 
 
 @override_settings(EMAIL_NOTIFICATIONS_ENABLED=True)

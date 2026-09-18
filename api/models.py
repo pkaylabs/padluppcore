@@ -237,6 +237,30 @@ class Notification(TimeStampedModel):
 	is_read = models.BooleanField(default=False)
 
 
+class DevicePushToken(TimeStampedModel):
+	PLATFORM_ANDROID = 'android'
+	PLATFORM_IOS = 'ios'
+	PLATFORM_CHOICES = [
+		(PLATFORM_ANDROID, 'Android'),
+		(PLATFORM_IOS, 'iOS'),
+	]
+
+	user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='push_tokens')
+	token = models.CharField(max_length=512, unique=True)
+	platform = models.CharField(max_length=20, choices=PLATFORM_CHOICES)
+	device_id = models.CharField(max_length=255)
+	is_active = models.BooleanField(default=True)
+	last_seen_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		constraints = [
+			models.UniqueConstraint(fields=['user', 'device_id'], name='uniq_push_token_user_device'),
+		]
+		indexes = [
+			models.Index(fields=['user', 'is_active']),
+		]
+
+
 class UserDailyActivity(TimeStampedModel):
 	"""One record per user per local calendar day with activity metadata."""
 

@@ -324,6 +324,13 @@ MAILGUN_FROM_EMAIL = os.getenv('MAILGUN_FROM_EMAIL', DEFAULT_FROM_EMAIL or '').s
 # Disabled by default; enable with EMAIL_NOTIFICATIONS_ENABLED=1 and Mailgun config.
 EMAIL_NOTIFICATIONS_ENABLED = os.getenv('EMAIL_NOTIFICATIONS_ENABLED', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
 
+# Firebase Cloud Messaging is opt-in so local/test environments do not need
+# service-account credentials. Keep the credential file outside the checkout.
+FIREBASE_PUSH_ENABLED = env_bool('FIREBASE_PUSH_ENABLED', False)
+FIREBASE_PROJECT_ID = os.getenv('FIREBASE_PROJECT_ID', '').strip()
+FIREBASE_SERVICE_ACCOUNT_FILE = os.getenv('FIREBASE_SERVICE_ACCOUNT_FILE', '').strip()
+FIREBASE_SERVICE_ACCOUNT_JSON = os.getenv('FIREBASE_SERVICE_ACCOUNT_JSON', '').strip()
+
 # Requests to scheduler-only endpoints must provide this value in
 # X-Padlupp-Cron-Secret. Development may omit it while DJANGO_DEBUG is enabled.
 CRON_SHARED_SECRET = os.getenv('CRON_SHARED_SECRET', '').strip()

@@ -13,6 +13,7 @@ from .viewsets import (
 	AuthViewSet,
 	BuddyViewSet,
 	ConversationViewSet,
+	DevicePushTokenViewSet,
 	EvidenceViewSet,
 	EventViewSet,
 	GoalViewSet,
@@ -44,6 +45,7 @@ router.register('timer-sessions', TimerSessionViewSet, basename='timer-sessions'
 router.register('evidences', EvidenceViewSet, basename='evidences')
 router.register('events', EventViewSet, basename='events')
 router.register('notifications', NotificationViewSet, basename='notifications')
+router.register('device-tokens', DevicePushTokenViewSet, basename='device-tokens')
 router.register('conversations', ConversationViewSet, basename='conversations')
 router.register('messages', MessageViewSet, basename='messages')
 router.register('waitlist', WaitlistViewSet, basename='waitlist')
