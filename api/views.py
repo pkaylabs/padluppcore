@@ -42,7 +42,6 @@ class InactiveUserNudgeView(APIView):
 
 		users = (
 			User.objects.filter(is_active=True, deleted=False, notify_on_reminders=True)
-			.exclude(Q(email__isnull=True) | Q(email=''))
 			.annotate(latest_daily_activity_at=Max('daily_activities__last_activity_at'))
 			.annotate(latest_activity_at=Coalesce('latest_daily_activity_at', 'last_login', 'created_at'))
 			.filter(latest_activity_at__lte=cutoff)
@@ -75,18 +74,32 @@ class InactiveUserNudgeView(APIView):
 				name=getattr(user, 'name', '') or getattr(user, 'email', '') or 'there',
 				days_inactive=days_inactive,
 			)
+			push_payload = {
+				'title': 'Ready for your next step?',
+				'message': f'It has been {days_inactive} days. A small update today can restart your momentum.',
+				'days_inactive': days_inactive,
+				'latest_activity_at': latest_activity_at.isoformat(),
+				'suppress_email': True,
+			}
+			Notification.objects.get_or_create(
+				user=user,
+				type='inactivity_nudge',
+				payload=push_payload,
+			)
 
-			try:
-				send_mailgun_email(
-					to_email=_notification_email_for_user(user),
-					subject=subject,
-					text=text,
-					html=html,
-					tags=['inactivity_nudge', f'{threshold_days}_days'],
-				)
-			except EmailSendError:
-				failed_count += 1
-				continue
+			email = _notification_email_for_user(user)
+			if email:
+				try:
+					send_mailgun_email(
+						to_email=email,
+						subject=subject,
+						text=text,
+						html=html,
+						tags=['inactivity_nudge', f'{threshold_days}_days'],
+					)
+				except EmailSendError:
+					failed_count += 1
+					continue
 
 			InactivityNudgeLog.objects.create(
 				user=user,
@@ -141,18 +154,17 @@ def _is_goal_due_tomorrow(goal: Goal, today_local_date, tomorrow_local_date) -> 
 
 def _checkin_recipients_for_goal(goal: Goal):
 	recipients = {}
-	if goal.user_id and goal.user and _notification_email_for_user(goal.user):
+	if goal.user_id and goal.user:
 		recipients[goal.user_id] = goal.user
 
 	partnership = getattr(goal, 'partnership', None)
 	if partnership:
-		if partnership.user_a_id and partnership.user_a and _notification_email_for_user(partnership.user_a):
+		if partnership.user_a_id and partnership.user_a:
 			recipients[partnership.user_a_id] = partnership.user_a
-		if partnership.user_b_id and partnership.user_b and _notification_email_for_user(partnership.user_b):
+		if partnership.user_b_id and partnership.user_b:
 			recipients[partnership.user_b_id] = partnership.user_b
 	for member in goal.members.all():
-		if _notification_email_for_user(member):
-			recipients[member.id] = member
+		recipients[member.id] = member
 
 	return list(recipients.values())
 
@@ -289,7 +301,7 @@ class GoalCheckinReminderCronView(APIView):
 			.iterator()
 		):
 			recipient = subtask.owner
-			if not recipient or not _notification_email_for_user(recipient):
+			if not recipient:
 				continue
 			tzinfo = get_user_tzinfo(recipient)
 			tomorrow_local = timezone.localtime(now, tzinfo).date() + timedelta(days=1)
@@ -321,22 +333,38 @@ class GoalCheckinReminderCronView(APIView):
 		for recipient_batch in reminders_by_recipient.values():
 			recipient = recipient_batch['recipient']
 			reminders = recipient_batch['reminders']
+			for reminder in reminders:
+				payload = {
+					'goal_id': reminder.get('goal').id if reminder.get('goal') else reminder['subtask'].goal_id,
+					'subtask_id': reminder.get('subtask').id if reminder.get('subtask') else None,
+					'title': reminder['title'],
+					'due_date': reminder['due_date'].isoformat(),
+					'message': 'Your check-in is due tomorrow. Keep your momentum going with a quick update.',
+					'suppress_email': True,
+				}
+				Notification.objects.get_or_create(
+					user=recipient,
+					type='checkin_reminder' if reminder['kind'] == 'goal' else 'subtask_reminder',
+					payload=payload,
+				)
 			subject, text, html = _build_checkin_reminder_email(
 				recipient_name=getattr(recipient, 'name', '') or getattr(recipient, 'email', ''),
 				reminders=reminders,
 			)
 
-			try:
-				send_mailgun_email(
-					to_email=_notification_email_for_user(recipient),
-					subject=subject,
-					text=text,
-					html=html,
-					tags=['checkin_reminder', 'digest'],
-				)
-			except EmailSendError:
-				emails_failed += 1
-				continue
+			email = _notification_email_for_user(recipient)
+			if email:
+				try:
+					send_mailgun_email(
+						to_email=email,
+						subject=subject,
+						text=text,
+						html=html,
+						tags=['checkin_reminder', 'digest'],
+					)
+				except EmailSendError:
+					emails_failed += 1
+					continue
 
 			CheckinReminderLog.objects.bulk_create(
 				[
@@ -359,19 +387,8 @@ class GoalCheckinReminderCronView(APIView):
 					for reminder in reminders if reminder['kind'] == 'subtask'
 				]
 			)
-			for reminder in reminders:
-				Notification.objects.create(
-					user=recipient,
-					type='checkin_reminder' if reminder['kind'] == 'goal' else 'subtask_reminder',
-					payload={
-						'goal_id': reminder.get('goal').id if reminder.get('goal') else reminder['subtask'].goal_id,
-						'subtask_id': reminder.get('subtask').id if reminder.get('subtask') else None,
-						'title': reminder['title'],
-						'due_date': reminder['due_date'].isoformat(),
-						'suppress_email': True,
-					},
-				)
-			emails_sent += 1
+			if email:
+				emails_sent += 1
 
 		return Response(
 			{

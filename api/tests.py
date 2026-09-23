@@ -24,6 +24,7 @@ from padluppcore.utils.email import EmailSendError
 from asgiref.sync import async_to_sync
 from api.consumers import ChatConsumer
 from api.push import send_notification_push
+from api.viewsets import AuthViewSet
 
 
 @override_settings(EMAIL_NOTIFICATIONS_ENABLED=False, FIREBASE_PUSH_ENABLED=False)
@@ -127,6 +128,28 @@ class DevicePushTokenTests(APITestCase):
 		self.assertEqual(message['notification']['title'], 'New message from Buddy')
 		self.assertEqual(message['data']['path'], '/messages/42')
 
+	@patch('api.push._access_token', return_value=('oauth-token', 'firebase-project'))
+	@patch('api.push.requests.post')
+	def test_buddy_invitation_push_has_actionable_content(self, mock_post, _mock_access_token):
+		DevicePushToken.objects.create(
+			user=self.user,
+			token='fcm-device-token',
+			platform='android',
+			device_id='device-1',
+		)
+		notification = Notification.objects.create(
+			user=self.user,
+			type='buddy_request_received',
+			payload={'from_user_name': 'Sam', 'message': 'Let us keep each other accountable.'},
+		)
+		mock_post.return_value.ok = True
+
+		send_notification_push(notification.id)
+
+		message = mock_post.call_args.kwargs['json']['message']
+		self.assertEqual(message['notification']['title'], 'New connection request')
+		self.assertEqual(message['data']['path'], '/buddies')
+
 
 @override_settings(EMAIL_NOTIFICATIONS_ENABLED=True)
 class RawFixtureSignalTests(APITestCase):
@@ -201,6 +224,9 @@ class BuddyEndpointsTests(APITestCase):
 		self.assertEqual(resp.data['status'], BuddyRequest.STATUS_PENDING)
 		self.assertEqual(resp.data['message'], 'Hey, want to connect?')
 		mock_send_mailgun_email.assert_called()
+		self.assertTrue(
+			Notification.objects.filter(user=self.other, type='buddy_request_received').exists()
+		)
 
 		# Recipient sees it in invitations
 		self.client.force_authenticate(user=self.other)
@@ -248,6 +274,9 @@ class BuddyEndpointsTests(APITestCase):
 
 		self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 		mock_send_mailgun_email.assert_not_called()
+		self.assertFalse(
+			Notification.objects.filter(user=self.other, type='buddy_request_received').exists()
+		)
 
 	def test_reject_removes_from_invitations(self):
 		BuddyRequest.objects.create(from_user=self.user, to_user=self.other)
@@ -540,6 +569,9 @@ class InactivityNudgeEndpointTests(APITestCase):
 		self.assertEqual(called_kwargs['to_email'], 'inactive@test.com')
 		self.assertIn('We miss you at Padlupp', called_kwargs['subject'])
 		self.assertIn('Padlupp', called_kwargs['text'])
+		self.assertTrue(
+			Notification.objects.filter(user=inactive, type='inactivity_nudge').exists()
+		)
 
 		with patch('django.utils.timezone.now', return_value=now):
 			resp2 = self.client.post(url)
@@ -553,6 +585,10 @@ class InactivityNudgeEndpointTests(APITestCase):
 				user=inactive,
 				threshold_days=14,
 			).exists()
+		)
+		self.assertEqual(
+			Notification.objects.filter(user=inactive, type='inactivity_nudge').count(),
+			1,
 		)
 
 	@patch('api.views.send_mailgun_email')
@@ -713,6 +749,7 @@ class CheckinReminderCronEndpointTests(APITestCase):
 		self.assertIn('3 Day Goal', owner_email['text'])
 		self.assertIn('Your 2 Padlupp check-in reminders', owner_email['subject'])
 		self.assertEqual(CheckinReminderLog.objects.filter(user=owner).count(), 2)
+		self.assertEqual(Notification.objects.filter(user=owner, type='checkin_reminder').count(), 2)
 
 		with patch('django.utils.timezone.now', return_value=now):
 			resp2 = self.client.post(url)
@@ -748,6 +785,11 @@ class CheckinReminderCronEndpointTests(APITestCase):
 		self.assertEqual(response.data['emails_failed'], 1)
 		self.assertEqual(mock_send_mailgun_email.call_count, 1)
 		self.assertEqual(CheckinReminderLog.objects.filter(user=owner).count(), 0)
+		self.assertEqual(Notification.objects.filter(user=owner, type='checkin_reminder').count(), 2)
+
+		with patch('django.utils.timezone.now', return_value=now):
+			self.client.post(url)
+		self.assertEqual(Notification.objects.filter(user=owner, type='checkin_reminder').count(), 2)
 
 	@patch('api.views.send_mailgun_email')
 	def test_checkin_digest_respects_reminder_preference(self, mock_send_mailgun_email):
@@ -1035,6 +1077,23 @@ class GoogleAuthEndpointsTests(APITestCase):
 	def setUp(self):
 		# Ensure the setting is present for token audience verification.
 		settings.GOOGLE_OAUTH2_CLIENT_ID = 'test-client-id.apps.googleusercontent.com'
+		settings.GOOGLE_OAUTH2_CLIENT_IDS = (settings.GOOGLE_OAUTH2_CLIENT_ID,)
+
+	def test_google_token_verification_accepts_any_configured_audience(self):
+		settings.GOOGLE_OAUTH2_CLIENT_IDS = (
+			'web-client-id.apps.googleusercontent.com',
+			'mobile-client-id.apps.googleusercontent.com',
+		)
+		with patch('api.viewsets.google_id_token.verify_oauth2_token') as verify:
+			verify.side_effect = [ValueError('wrong audience'), {'email': 'user@test.com'}]
+			payload = AuthViewSet()._verify_google_id_token('dummy')
+
+		self.assertEqual(payload['email'], 'user@test.com')
+		self.assertEqual(verify.call_count, 2)
+		self.assertEqual(
+			verify.call_args_list[1].args[2],
+			'mobile-client-id.apps.googleusercontent.com',
+		)
 
 	def test_google_signup_creates_user_profile_and_token(self):
 		url = reverse('auth-google-signup')

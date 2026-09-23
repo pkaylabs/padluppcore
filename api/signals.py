@@ -52,8 +52,11 @@ def _notification_preference_enabled(user, notification_type: str) -> bool:
         'evidence_submitted': 'notify_on_reminders',
         'task_approved': 'notify_on_reminders',
         'task_changes_requested': 'notify_on_reminders',
+        'buddy_request_received': 'notify_on_new_match',
         'buddy_request_accepted': 'notify_on_new_match',
         'goal_shared': 'notify_on_new_match',
+        'goal_joined': 'notify_on_new_match',
+        'inactivity_nudge': 'notify_on_reminders',
     }
     preference_field = preference_by_type.get((notification_type or '').strip())
     if not preference_field:

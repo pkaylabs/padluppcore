@@ -63,12 +63,22 @@ def _notification_content(notification: Notification) -> tuple[str, str, str]:
 	if notification_type == 'new_message':
 		sender_name = payload.get('sender_name') or 'Someone'
 		return f'New message from {sender_name}', payload.get('preview') or 'Open Padlupp to reply.', f"/messages/{payload.get('conversation_id', '')}"
+	if notification_type == 'buddy_request_received':
+		from_name = payload.get('from_user_name') or 'Someone'
+		return 'New connection request', payload.get('message') or f'{from_name} wants to connect with you.', '/buddies'
 	if notification_type in {'new_match', 'buddy_request_accepted'}:
-		return 'Accountability update', payload.get('message') or 'You have a new buddy update.', '/buddies'
+		return payload.get('title') or 'Accountability update', payload.get('message') or 'You have a new buddy update.', '/buddies'
+	if notification_type == 'goal_joined':
+		goal_id = payload.get('goal_id') or ''
+		return payload.get('title') or 'Someone joined your goal', payload.get('message') or 'Open Padlupp to welcome them.', f'/goals/{goal_id}'
 	if notification_type in {'checkin_reminder', 'subtask_reminder'}:
 		return 'Time to check in', payload.get('message') or 'Keep your momentum going with a quick update.', f"/goals/{payload.get('goal_id', '')}"
+	if notification_type == 'inactivity_nudge':
+		return payload.get('title') or 'Ready for your next step?', payload.get('message') or 'A small update today can restart your momentum.', '/goals'
 	if notification_type in {'new_task', 'review_requested', 'evidence_submitted', 'task_approved', 'task_changes_requested', 'goal_shared'}:
-		return payload.get('title') or 'Goal update', payload.get('message') or 'There is an update waiting for you.', f"/goals/{payload.get('goal_id', '')}"
+		goal_id = payload.get('goal_id')
+		path = f'/goals/{goal_id}' if goal_id else '/notifications'
+		return payload.get('title') or 'Goal update', payload.get('message') or 'There is an update waiting for you.', path
 	return payload.get('title') or 'Padlupp', payload.get('message') or payload.get('detail') or 'You have a new notification.', '/notifications'
 
 

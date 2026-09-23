@@ -373,6 +373,21 @@ class BuddyViewSet(viewsets.ViewSet):
 				# Best-effort only: don't block the request on email issues.
 				pass
 
+		if to_user.notify_on_new_match:
+			from_name = (getattr(from_user, 'name', '') or '').strip() or 'Someone'
+			Notification.objects.create(
+				user=to_user,
+				type='buddy_request_received',
+				payload={
+					'buddy_request_id': buddy_request.id,
+					'from_user_id': from_user.id,
+					'from_user_name': from_name,
+					'title': 'New connection request',
+					'message': message or f'{from_name} wants to connect with you.',
+					'suppress_email': True,
+				},
+			)
+
 		return Response(BuddyRequestSerializer(buddy_request, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
 
@@ -432,7 +447,12 @@ class BuddyViewSet(viewsets.ViewSet):
 			Notification.objects.create(
 				user=buddy_request.from_user,
 				type='buddy_request_accepted',
-				payload={'partner_id': buddy_request.to_user_id, 'partnership_id': partnership.id},
+				payload={
+					'partner_id': buddy_request.to_user_id,
+					'partnership_id': partnership.id,
+					'title': 'Connection request accepted',
+					'message': f'{buddy_request.to_user.name} accepted your connection request.',
+				},
 			)
 
 		return Response({'detail': 'Accepted.', 'partnership_id': partnership.id}, status=status.HTTP_200_OK)
@@ -801,14 +821,21 @@ class AuthViewSet(viewsets.ViewSet):
 	throttle_scope = 'auth'
 
 	def _verify_google_id_token(self, token: str) -> dict:
-		client_id = getattr(settings, 'GOOGLE_OAUTH2_CLIENT_ID', '')
-		if not client_id:
-			raise RuntimeError('GOOGLE_OAUTH2_CLIENT_ID is not configured.')
-		return google_id_token.verify_oauth2_token(
-			token,
-			google_requests.Request(),
-			client_id,
-		)
+		client_ids = getattr(settings, 'GOOGLE_OAUTH2_CLIENT_IDS', ())
+		if not client_ids:
+			legacy_client_id = getattr(settings, 'GOOGLE_OAUTH2_CLIENT_ID', '')
+			client_ids = (legacy_client_id,) if legacy_client_id else ()
+		if not client_ids:
+			raise RuntimeError('Google OAuth client IDs are not configured.')
+
+		request = google_requests.Request()
+		last_error = None
+		for client_id in client_ids:
+			try:
+				return google_id_token.verify_oauth2_token(token, request, client_id)
+			except ValueError as exc:
+				last_error = exc
+		raise last_error or ValueError('Invalid Google token audience.')
 
 	@extend_schema(
 		request=LoginRequestSerializer,
@@ -1390,16 +1417,26 @@ class GoalViewSet(viewsets.ModelViewSet):
 		goal.save(update_fields=['is_shared', 'updated_at'])
 		_ensure_goal_conversation(goal, request.user)
 
-		# Notify the goal owner (best-effort). Only send if this request actually
-		# created a new membership row to avoid duplicate emails.
-		if created and _email_notifications_enabled():
+		# Notify the goal owner only when a new membership is created.
+		if created:
 			owner = getattr(goal, 'user', None)
 			joiner = request.user
-			if owner and owner.email and owner.id != joiner.id and owner.notify_on_new_match:
+			if owner and owner.id != joiner.id and owner.notify_on_new_match:
 				joiner_name = (getattr(joiner, 'name', '') or getattr(joiner, 'email', '') or 'Someone').strip()
 				owner_name = (getattr(owner, 'name', '') or 'there').strip()
 				goal_title = (getattr(goal, 'title', '') or 'your goal').strip()
 				goal_url = _goal_direct_link(goal.id)
+				Notification.objects.create(
+					user=owner,
+					type='goal_joined',
+					payload={
+						'goal_id': goal.id,
+						'joiner_id': joiner.id,
+						'title': f'{joiner_name} joined your goal',
+						'message': f'{joiner_name} joined "{goal_title}". Open Padlupp to welcome them.',
+						'suppress_email': True,
+					},
+				)
 				subject = f"{joiner_name} just joined your goal — let’s go!"
 				text = (
 					f"Hi {owner_name},\n\n"
@@ -1408,15 +1445,16 @@ class GoalViewSet(viewsets.ModelViewSet):
 					f"Jump into the goal: {goal_url}\n\n"
 					f"Jump into the conversation and say hi! The more you engage with your accountability partner, the more likely you both are to achieve your goals.\nhttps://app.padlupp.com/messages"
 				)
-				try:
-					send_mailgun_email(
-						to_email=owner.email,
-						subject=subject,
-						text=text,
-						tags=['goal_join'],
-					)
-				except EmailSendError:
-					pass
+				if owner.email and _email_notifications_enabled():
+					try:
+						send_mailgun_email(
+							to_email=owner.email,
+							subject=subject,
+							text=text,
+							tags=['goal_join'],
+						)
+					except EmailSendError:
+						pass
 		return Response(
 			{
 				'detail': 'Joined goal.',
@@ -1738,7 +1776,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 				Notification.objects.create(
 					user=partner,
 					type='new_task',
-					payload={'task_id': task.id, 'title': task.title},
+					payload={'task_id': task.id, 'goal_id': task.goal_id, 'title': task.title},
 				)
 
 	def perform_update(self, serializer):
@@ -1799,7 +1837,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 				Notification.objects.create(
 					user=partner,
 					type='review_requested',
-					payload={'task_id': task.id, 'title': task.title},
+					payload={'task_id': task.id, 'goal_id': task.goal_id, 'title': task.title},
 				)
 		return Response(TaskSerializer(task).data)
 
@@ -1847,7 +1885,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 			Notification.objects.create(
 				user=task.owner,
 				type='task_approved',
-				payload={'task_id': task.id},
+				payload={'task_id': task.id, 'goal_id': task.goal_id},
 			)
 		return Response(TaskSerializer(task).data)
 
@@ -1885,7 +1923,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 			Notification.objects.create(
 				user=task.owner,
 				type='task_changes_requested',
-				payload={'task_id': task.id, 'comment': comment},
+				payload={'task_id': task.id, 'goal_id': task.goal_id, 'comment': comment},
 			)
 		return Response(TaskSerializer(task).data)
 
@@ -1935,7 +1973,7 @@ class EvidenceViewSet(viewsets.ModelViewSet):
 				Notification.objects.create(
 					user=partner,
 					type='evidence_submitted',
-					payload={'task_id': task.id, 'evidence_id': evidence.id},
+					payload={'task_id': task.id, 'goal_id': task.goal_id, 'evidence_id': evidence.id},
 				)
 
 
