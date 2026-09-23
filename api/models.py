@@ -470,6 +470,99 @@ class Message(TimeStampedModel):
 	metadata = models.JSONField(default=dict, blank=True)
 
 
+class UserBlock(TimeStampedModel):
+	blocker = models.ForeignKey(
+		settings.AUTH_USER_MODEL,
+		on_delete=models.CASCADE,
+		related_name='user_blocks_created',
+	)
+	blocked = models.ForeignKey(
+		settings.AUTH_USER_MODEL,
+		on_delete=models.CASCADE,
+		related_name='user_blocks_received',
+	)
+
+	class Meta:
+		constraints = [
+			models.UniqueConstraint(fields=['blocker', 'blocked'], name='uniq_user_block'),
+			models.CheckConstraint(
+				condition=~models.Q(blocker=models.F('blocked')),
+				name='prevent_self_block',
+			),
+		]
+		indexes = [
+			models.Index(fields=['blocker', 'blocked']),
+			models.Index(fields=['blocked', 'blocker']),
+		]
+
+
+class ContentReport(TimeStampedModel):
+	REASON_HARASSMENT = 'harassment'
+	REASON_SPAM = 'spam'
+	REASON_HATE_SPEECH = 'hate_speech'
+	REASON_SEXUAL_CONTENT = 'sexual_content'
+	REASON_VIOLENCE = 'violence'
+	REASON_IMPERSONATION = 'impersonation'
+	REASON_OTHER = 'other'
+	REASON_CHOICES = [
+		(REASON_HARASSMENT, 'Harassment or bullying'),
+		(REASON_SPAM, 'Spam or scam'),
+		(REASON_HATE_SPEECH, 'Hate speech'),
+		(REASON_SEXUAL_CONTENT, 'Sexual content'),
+		(REASON_VIOLENCE, 'Violence or threats'),
+		(REASON_IMPERSONATION, 'Impersonation'),
+		(REASON_OTHER, 'Other'),
+	]
+
+	STATUS_PENDING = 'pending'
+	STATUS_REVIEWED = 'reviewed'
+	STATUS_ACTIONED = 'actioned'
+	STATUS_DISMISSED = 'dismissed'
+	STATUS_CHOICES = [
+		(STATUS_PENDING, 'Pending'),
+		(STATUS_REVIEWED, 'Reviewed'),
+		(STATUS_ACTIONED, 'Actioned'),
+		(STATUS_DISMISSED, 'Dismissed'),
+	]
+
+	reporter = models.ForeignKey(
+		settings.AUTH_USER_MODEL,
+		on_delete=models.SET_NULL,
+		null=True,
+		related_name='content_reports_submitted',
+	)
+	reported_user = models.ForeignKey(
+		settings.AUTH_USER_MODEL,
+		on_delete=models.SET_NULL,
+		null=True,
+		related_name='content_reports_received',
+	)
+	conversation = models.ForeignKey(
+		Conversation,
+		on_delete=models.SET_NULL,
+		null=True,
+		blank=True,
+		related_name='content_reports',
+	)
+	message = models.ForeignKey(
+		Message,
+		on_delete=models.SET_NULL,
+		null=True,
+		blank=True,
+		related_name='content_reports',
+	)
+	reason = models.CharField(max_length=32, choices=REASON_CHOICES)
+	details = models.TextField(blank=True, default='')
+	status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+	moderator_notes = models.TextField(blank=True, default='')
+
+	class Meta:
+		indexes = [
+			models.Index(fields=['status', '-created_at']),
+			models.Index(fields=['reported_user', '-created_at']),
+		]
+
+
 class Waitlister(TimeStampedModel):
 	email = models.EmailField(unique=True)
 	name = models.CharField(max_length=255, blank=True)

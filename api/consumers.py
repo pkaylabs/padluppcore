@@ -7,6 +7,7 @@ from urllib.parse import parse_qs
 
 from django.conf import settings
 from django.core.files.base import ContentFile
+from django.db.models import Q
 from django.db.models.functions import Coalesce
 from django.utils.text import get_valid_filename
 
@@ -18,7 +19,7 @@ from django.utils.dateparse import parse_datetime
 from knox.auth import TokenAuthentication
 
 from accounts.models import User
-from .models import Conversation, Message
+from .models import Conversation, ConversationMembership, Message, UserBlock
 from .presence import (
     PRESENCE_STALE_SECONDS as DEFAULT_PRESENCE_STALE_SECONDS,
     presence_cache_key,
@@ -115,10 +116,17 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
         from django.db.models import Exists, OuterRef, Q
         from .models import ConversationMembership
 
+        blocked_user_ids = {
+            blocked_id if blocker_id == user_id else blocker_id
+            for blocker_id, blocked_id in UserBlock.objects.filter(
+                Q(blocker_id=user_id) | Q(blocked_id=user_id)
+            ).values_list('blocker_id', 'blocked_id')
+        }
         convs = list(
             Conversation.objects.select_related('partnership', 'partnership__user_a', 'partnership__user_b', 'goal')
             .prefetch_related('members')
             .filter(Q(members__id=user_id) | Q(partnership__user_a_id=user_id) | Q(partnership__user_b_id=user_id) | Q(goal__members__id=user_id))
+            .exclude(Q(partnership__user_a_id__in=blocked_user_ids) | Q(partnership__user_b_id__in=blocked_user_ids))
             .annotate(archived_for_user=Exists(ConversationMembership.objects.filter(
                 conversation_id=OuterRef('pk'), user_id=user_id, archived_at__isnull=False,
             )))
@@ -134,6 +142,7 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
         last_msg_id_by_conv = {}
         for conv_id, msg_id in (
             Message.objects.filter(conversation_id__in=conv_ids)
+            .exclude(sender_id__in=blocked_user_ids)
             .order_by('conversation_id', '-created_at')
             .values_list('conversation_id', 'id')
         ):
@@ -164,6 +173,7 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
             unread_count = (
                 Message.objects.filter(conversation_id=conv.id, is_read=False)
                 .exclude(sender_id=user_id)
+                .exclude(sender_id__in=blocked_user_ids)
                 .count()
             )
             result.append(
@@ -320,7 +330,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self.broadcast_presence()
 
         # Send message history to the connecting client
-        history = await self.get_message_history(self.conversation_id, limit=self.HISTORY_LIMIT)
+        history = await self.get_message_history(self.conversation_id, user.id, limit=self.HISTORY_LIMIT)
         await self.send_json({'type': 'history', 'messages': history})
 
         # Send a presence snapshot to the connecting client
@@ -424,6 +434,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     attachment_size=len(bytes_data),
                     reply_to_message_id=meta.get('reply_to_message_id'),
                 )
+            except PermissionError:
+                await self.send_json({'type': 'error', 'error': 'conversation_blocked'})
+                return
             except ValueError:
                 await self.send_json({'type': 'error', 'error': 'invalid_reply_target'})
                 return
@@ -457,6 +470,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     text,
                     reply_to_message_id=data.get('reply_to_message_id'),
                 )
+            except PermissionError:
+                await self.send_json({'type': 'error', 'error': 'conversation_blocked'})
+                return
             except ValueError:
                 await self.send_json({'type': 'error', 'error': 'invalid_reply_target'})
                 return
@@ -514,6 +530,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     attachment_size=len(raw),
                     reply_to_message_id=reply_to_message_id,
                 )
+            except PermissionError:
+                await self.send_json({'type': 'error', 'error': 'conversation_blocked'})
+                return
             except ValueError:
                 await self.send_json({'type': 'error', 'error': 'invalid_reply_target'})
                 return
@@ -645,6 +664,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
             conv = Conversation.objects.select_related('partnership', 'partnership__user_a', 'partnership__user_b', 'goal').prefetch_related('members').get(id=conversation_id)
         except Conversation.DoesNotExist:
             return None
+        blocked_user_ids = self.blocked_user_ids(user_id)
+        if conv.partnership_id and (
+            conv.partnership.user_a_id in blocked_user_ids
+            or conv.partnership.user_b_id in blocked_user_ids
+        ):
+            return None
         member_users = list(conv.members.all()) if conv.members.exists() else []
         if conv.is_group and conv.goal_id:
             partner_data = {'name': conv.goal.title, 'avatar': None}
@@ -664,12 +689,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
         last_msg = (
             Message.objects.select_related('sender')
             .filter(conversation_id=conversation_id)
+            .exclude(sender_id__in=blocked_user_ids)
             .order_by('-created_at')
             .first()
         )
         unread_count = (
             Message.objects.filter(conversation_id=conversation_id, is_read=False)
             .exclude(sender_id=user_id)
+            .exclude(sender_id__in=blocked_user_ids)
             .count()
         )
         return {
@@ -690,6 +717,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def chat_message(self, event):
         # Backward-compatible: message payload is sent as the serialized dict.
+        sender_id = ((event.get('message') or {}).get('sender') or {}).get('id')
+        user = self.scope.get('user')
+        if sender_id and user and sender_id != user.id:
+            if await self.users_blocked_each_other(user.id, sender_id):
+                return
         await self.send(text_data=json.dumps(event['message']))
 
     async def chat_message_updated(self, event):
@@ -853,8 +885,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
         except Conversation.DoesNotExist:
             return False
         if conv.members.filter(id=user_id).exists():
+            if conv.partnership_id:
+                other_user_id = conv.partnership.user_b_id if conv.partnership.user_a_id == user_id else conv.partnership.user_a_id
+                if self._users_blocked_each_other(user_id, other_user_id):
+                    return False
             return True
         if conv.partnership_id and user_id in [conv.partnership.user_a_id, conv.partnership.user_b_id]:
+            other_user_id = conv.partnership.user_b_id if conv.partnership.user_a_id == user_id else conv.partnership.user_a_id
+            if self._users_blocked_each_other(user_id, other_user_id):
+                return False
             return True
         if conv.goal_id and conv.goal.members.filter(id=user_id).exists():
             return True
@@ -874,7 +913,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
         reply_to_message_id: int | None = None,
     ):
         user = User.objects.get(id=user_id)
-        conversation = Conversation.objects.get(id=conversation_id)
+        conversation = Conversation.objects.select_related('partnership').get(id=conversation_id)
+        if conversation.partnership_id:
+            other_user_id = conversation.partnership.user_b_id if conversation.partnership.user_a_id == user_id else conversation.partnership.user_a_id
+            if self._users_blocked_each_other(user_id, other_user_id):
+                raise PermissionError('Messaging is unavailable for this conversation.')
         reply_to_message = None
         if reply_to_message_id:
             reply_to_message = Message.objects.filter(id=reply_to_message_id, conversation_id=conversation_id).first()
@@ -893,14 +936,34 @@ class ChatConsumer(AsyncWebsocketConsumer):
         )
 
     @database_sync_to_async
-    def get_message_history(self, conversation_id, limit: int = 50):
+    def get_message_history(self, conversation_id, user_id: int, limit: int = 50):
+        blocked_user_ids = self.blocked_user_ids(user_id)
         qs = (
             Message.objects.select_related('sender')
             .filter(conversation_id=conversation_id)
+            .exclude(sender_id__in=blocked_user_ids)
             .order_by('-created_at')[:limit]
         )
         items = list(qs)[::-1]
         return MessageSerializer(items, many=True, context={'request': self.serializer_request}).data
+
+    def blocked_user_ids(self, user_id: int) -> set[int]:
+        return {
+            blocked_id if blocker_id == user_id else blocker_id
+            for blocker_id, blocked_id in UserBlock.objects.filter(
+                Q(blocker_id=user_id) | Q(blocked_id=user_id)
+            ).values_list('blocker_id', 'blocked_id')
+        }
+
+    def _users_blocked_each_other(self, first_user_id: int, second_user_id: int) -> bool:
+        return UserBlock.objects.filter(
+            Q(blocker_id=first_user_id, blocked_id=second_user_id)
+            | Q(blocker_id=second_user_id, blocked_id=first_user_id)
+        ).exists()
+
+    @database_sync_to_async
+    def users_blocked_each_other(self, first_user_id: int, second_user_id: int) -> bool:
+        return self._users_blocked_each_other(first_user_id, second_user_id)
 
     @database_sync_to_async
     def message_belongs_to_conversation(self, message_id: int, conversation_id) -> bool:

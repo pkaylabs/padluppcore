@@ -21,6 +21,8 @@ from .models import (
 	UserDailyActivity,
 	Evidence,
 	Notification,
+	ContentReport,
+	UserBlock,
     Conversation,
     Message,
 	InactivityNudgeLog,
@@ -125,6 +127,20 @@ class MessageAdmin(admin.ModelAdmin):
 	list_display = ('id', 'conversation', 'sender', 'is_a_reply', 'reply_to_message', 'text', 'is_read', 'created_at')
 	search_fields = ('sender__email', 'text')
 	list_filter = ('is_read',)
+
+
+@admin.register(UserBlock)
+class UserBlockAdmin(admin.ModelAdmin):
+	list_display = ('id', 'blocker', 'blocked', 'created_at')
+	search_fields = ('blocker__email', 'blocker__name', 'blocked__email', 'blocked__name')
+
+
+@admin.register(ContentReport)
+class ContentReportAdmin(admin.ModelAdmin):
+	list_display = ('id', 'reason', 'status', 'reporter', 'reported_user', 'message', 'created_at')
+	search_fields = ('reporter__email', 'reported_user__email', 'details', 'moderator_notes')
+	list_filter = ('status', 'reason', 'created_at')
+	readonly_fields = ('reporter', 'reported_user', 'conversation', 'message', 'reason', 'details', 'created_at', 'updated_at')
 
 
 @admin.register(Waitlister)

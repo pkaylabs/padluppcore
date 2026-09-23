@@ -6,6 +6,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Q
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
@@ -13,7 +14,7 @@ from accounts.models import User
 from padluppcore.utils.email import EmailSendError, send_mailgun_email
 
 from .activity import record_user_activity
-from .models import Conversation, ConversationMembership, Evidence, Goal, GoalMembership, Message, Notification, Task, TimerSession
+from .models import Conversation, ConversationMembership, Evidence, Goal, GoalMembership, Message, Notification, Task, TimerSession, UserBlock
 from .presence import get_globally_online_user_ids, get_online_user_ids
 from .push import enqueue_notification_push
 from .serializers import MessageSerializer
@@ -39,6 +40,15 @@ def _conversation_participant_ids(conversation: Conversation) -> list[int]:
     if conversation.goal_id:
         return list(conversation.goal.members.values_list('id', flat=True))
     return []
+
+
+def _blocked_user_ids(user_id: int) -> set[int]:
+    return {
+        blocked_id if blocker_id == user_id else blocker_id
+        for blocker_id, blocked_id in UserBlock.objects.filter(
+            Q(blocker_id=user_id) | Q(blocked_id=user_id)
+        ).values_list('blocker_id', 'blocked_id')
+    }
 
 
 def _notification_preference_enabled(user, notification_type: str) -> bool:
@@ -75,13 +85,6 @@ def _broadcast_conversation_state(conversation_id: int):
         if not user_ids:
             return
 
-        last_msg = (
-            Message.objects.select_related('sender')
-            .filter(conversation_id=conv.id)
-            .order_by('-created_at')
-            .first()
-        )
-        last_message_payload = MessageSerializer(last_msg, context={}).data if last_msg else None
         member_names = [u.name for u in conv.members.all()]
 
         for uid in user_ids:
@@ -90,6 +93,12 @@ def _broadcast_conversation_state(conversation_id: int):
                 user_id=uid,
                 archived_at__isnull=False,
             ).exists():
+                continue
+            blocked_user_ids = _blocked_user_ids(uid)
+            if conv.partnership_id and (
+                conv.partnership.user_a_id in blocked_user_ids
+                or conv.partnership.user_b_id in blocked_user_ids
+            ):
                 continue
             partner_name = None
             partner_avatar = None
@@ -102,9 +111,18 @@ def _broadcast_conversation_state(conversation_id: int):
             else:
                 partner_name = conv.goal.title if conv.goal_id else ', '.join(member_names)
 
+            last_msg = (
+                Message.objects.select_related('sender')
+                .filter(conversation_id=conv.id)
+                .exclude(sender_id__in=blocked_user_ids)
+                .order_by('-created_at')
+                .first()
+            )
+            last_message_payload = MessageSerializer(last_msg, context={}).data if last_msg else None
             unread_count = (
                 Message.objects.filter(conversation_id=conv.id, is_read=False)
                 .exclude(sender_id=uid)
+                .exclude(sender_id__in=blocked_user_ids)
                 .count()
             )
             payload = {
@@ -177,6 +195,7 @@ def notify_new_message(sender, instance: Message, created: bool, **kwargs):
         user_id
         for user_id in _conversation_participant_ids(conversation)
         if user_id != instance.sender_id
+        and instance.sender_id not in _blocked_user_ids(user_id)
     ]
     online_user_ids = (
         get_globally_online_user_ids()

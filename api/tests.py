@@ -16,7 +16,7 @@ from django.utils import timezone
 from datetime import datetime, timezone as dt_timezone, timedelta
 
 from accounts.models import User
-from api.models import BuddyRequest, DevicePushToken, Partnership, Profile, Conversation, ConversationMembership, Message, Goal, GoalCheckin, GoalCheckinBadge, GoalMembership, Match, Task, TimerSession, Evidence, Notification, UserDailyActivity, InactivityNudgeLog, CheckinReminderLog, SubTaskReminderLog, Waitlister
+from api.models import BuddyRequest, ContentReport, DevicePushToken, Partnership, Profile, Conversation, ConversationMembership, Message, Goal, GoalCheckin, GoalCheckinBadge, GoalMembership, Match, Task, TimerSession, Evidence, Notification, UserBlock, UserDailyActivity, InactivityNudgeLog, CheckinReminderLog, SubTaskReminderLog, Waitlister
 from api.serializers import UserSerializer, MessageSerializer
 from api.consumers import _ScopeRequest
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -695,6 +695,20 @@ class ChatPresenceTests(TransactionTestCase):
 		self.assertEqual(online_ids, [])
 		self.assertEqual(self.user.last_seen_at, heartbeat_at)
 
+	def test_blocked_direct_conversation_rejects_websocket_access_and_messages(self):
+		UserBlock.objects.create(blocker=self.user, blocked=self.partner)
+
+		is_member = async_to_sync(self.consumer.user_in_conversation)(self.partner.id, self.conversation.id)
+
+		self.assertFalse(is_member)
+		with self.assertRaises(PermissionError):
+			async_to_sync(self.consumer.create_message)(
+				self.partner.id,
+				self.conversation.id,
+				'Blocked websocket message',
+			)
+		self.assertFalse(Message.objects.filter(text='Blocked websocket message').exists())
+
 
 @override_settings(CRON_SHARED_SECRET='test-cron-secret')
 class CheckinReminderCronEndpointTests(APITestCase):
@@ -1286,6 +1300,94 @@ class ConversationEndpointsTests(APITestCase):
 		self.assertEqual(rows2[0]['unread_count'], 1)
 
 
+@override_settings(EMAIL_NOTIFICATIONS_ENABLED=False, FIREBASE_PUSH_ENABLED=False)
+class SafetyModerationTests(APITestCase):
+	def setUp(self):
+		self.user = User.objects.create_user(
+			email='safety-user@test.com', phone='+10000000121', name='Safety User', password='pass1234'
+		)
+		self.other = User.objects.create_user(
+			email='safety-other@test.com', phone='+10000000122', name='Safety Other', password='pass1234'
+		)
+		Profile.objects.get_or_create(user=self.user, defaults={'experience': 'accountability'})
+		Profile.objects.get_or_create(user=self.other, defaults={'experience': 'accountability'})
+		user_a, user_b = sorted([self.user, self.other], key=lambda user: user.id)
+		self.partnership = Partnership.objects.create(user_a=user_a, user_b=user_b)
+		self.conversation = Conversation.objects.create(partnership=self.partnership)
+		self.conversation.members.add(self.user, self.other)
+		self.message = Message.objects.create(
+			conversation=self.conversation,
+			sender=self.other,
+			text='Reportable message',
+		)
+		self.client.force_authenticate(user=self.user)
+
+	def test_block_hides_direct_relationship_and_prevents_messages(self):
+		response = self.client.post(reverse('buddies-block', kwargs={'user_id': self.other.id}))
+
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		self.assertTrue(UserBlock.objects.filter(blocker=self.user, blocked=self.other).exists())
+		conversations = self.client.get(reverse('conversations-list'))
+		conversation_rows = conversations.data.get('results', conversations.data)
+		self.assertEqual(conversation_rows, [])
+		messages = self.client.get(reverse('messages-list'), {'conversation': self.conversation.id})
+		message_rows = messages.data.get('results', messages.data)
+		self.assertEqual(message_rows, [])
+		create_message = self.client.post(
+			reverse('messages-list'),
+			{'conversation': self.conversation.id, 'text': 'Should not send'},
+			format='json',
+		)
+		self.assertEqual(create_message.status_code, status.HTTP_403_FORBIDDEN)
+
+		self.client.force_authenticate(user=self.other)
+		reverse_direction = self.client.post(
+			reverse('buddies-connect'),
+			{'to_user': self.user.id, 'message': 'Should not connect'},
+			format='json',
+		)
+		self.assertEqual(reverse_direction.status_code, status.HTTP_403_FORBIDDEN)
+
+	def test_blocked_users_can_be_listed_and_unblocked(self):
+		UserBlock.objects.create(blocker=self.user, blocked=self.other)
+
+		blocked = self.client.get(reverse('buddies-blocked'))
+		self.assertEqual(blocked.status_code, status.HTTP_200_OK)
+		self.assertEqual([row['id'] for row in blocked.data], [self.other.id])
+
+		unblocked = self.client.post(reverse('buddies-unblock', kwargs={'user_id': self.other.id}))
+		self.assertEqual(unblocked.status_code, status.HTTP_200_OK)
+		self.assertFalse(UserBlock.objects.filter(blocker=self.user, blocked=self.other).exists())
+
+	def test_user_and_message_reports_create_pending_moderation_records(self):
+		user_report = self.client.post(
+			reverse('buddies-report', kwargs={'user_id': self.other.id}),
+			{'reason': ContentReport.REASON_HARASSMENT, 'details': 'Repeated unwanted contact.'},
+			format='json',
+		)
+		message_report = self.client.post(
+			reverse('messages-report', kwargs={'pk': self.message.id}),
+			{'reason': ContentReport.REASON_SPAM, 'details': 'Suspicious link.'},
+			format='json',
+		)
+
+		self.assertEqual(user_report.status_code, status.HTTP_201_CREATED)
+		self.assertEqual(message_report.status_code, status.HTTP_201_CREATED)
+		self.assertTrue(ContentReport.objects.filter(
+			reporter=self.user,
+			reported_user=self.other,
+			message__isnull=True,
+			status=ContentReport.STATUS_PENDING,
+		).exists())
+		self.assertTrue(ContentReport.objects.filter(
+			reporter=self.user,
+			reported_user=self.other,
+			message=self.message,
+			conversation=self.conversation,
+			status=ContentReport.STATUS_PENDING,
+		).exists())
+
+
 class NotificationPreferenceTests(APITestCase):
 	def setUp(self):
 		cache.clear()
@@ -1326,6 +1428,21 @@ class NotificationPreferenceTests(APITestCase):
 				payload__message_id=message.id,
 			).exists()
 		)
+
+	def test_blocked_sender_does_not_create_message_notification(self):
+		sender = self._mk_user(email='blocked-sender@test.com', phone='+10000000123', name='Blocked Sender')
+		recipient = self._mk_user(email='blocking-recipient@test.com', phone='+10000000124', name='Blocking Recipient')
+		conversation = Conversation.objects.create(is_group=True, name='Blocked Sender Test')
+		conversation.members.add(sender, recipient)
+		UserBlock.objects.create(blocker=recipient, blocked=sender)
+
+		message = Message.objects.create(conversation=conversation, sender=sender, text='Do not notify')
+
+		self.assertFalse(Notification.objects.filter(
+			user=recipient,
+			type='new_message',
+			payload__message_id=message.id,
+		).exists())
 
 	def test_online_recipient_does_not_receive_new_message_notification(self):
 		sender = self._mk_user(email='online-sender@test.com', phone='+10000000087', name='Sender')

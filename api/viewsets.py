@@ -27,7 +27,7 @@ from padluppcore.utils.email import EmailSendError, send_mailgun_email
 from .activity import dt_to_local_date, get_user_tzinfo, record_user_activity
 
 from accounts.models import AccountDeletionRequest, PasswordResetOTP, User
-from .models import BuddyRequest, Conversation, ConversationMembership, DevicePushToken, Evidence, Event, Goal, GoalCheckin, GoalCheckinBadge, GoalCheckinEvidenceView, GoalCheckinReaction, GoalMembership, Match, Message, Notification, Partnership, Profile, SubTask, Task, TimerSession, UserDailyActivity, Waitlister
+from .models import BuddyRequest, ContentReport, Conversation, ConversationMembership, DevicePushToken, Evidence, Event, Goal, GoalCheckin, GoalCheckinBadge, GoalCheckinEvidenceView, GoalCheckinReaction, GoalMembership, Match, Message, Notification, Partnership, Profile, SubTask, Task, TimerSession, UserBlock, UserDailyActivity, Waitlister
 from .matching import compatibility_details, profile_is_complete
 from .serializers import (
 	BuddyConnectSerializer,
@@ -36,6 +36,7 @@ from .serializers import (
 	BuddyRequestActionResponseSerializer,
 	BuddyProfileResponseSerializer,
 	ConversationMediaSerializer,
+	ContentReportRequestSerializer,
 	DetailResponseSerializer,
 	UserAvatarRequestSerializer,
 	ProfileExperienceRequestSerializer,
@@ -173,6 +174,20 @@ def _normalize_email(email: str | None) -> str:
 	return (email or '').strip().lower()
 
 
+def _blocked_user_ids(user: User | int) -> set[int]:
+	user_id = user.id if isinstance(user, User) else user
+	blocked = set(UserBlock.objects.filter(blocker_id=user_id).values_list('blocked_id', flat=True))
+	blocked.update(UserBlock.objects.filter(blocked_id=user_id).values_list('blocker_id', flat=True))
+	return blocked
+
+
+def _users_blocked_each_other(first_user_id: int, second_user_id: int) -> bool:
+	return UserBlock.objects.filter(
+		models.Q(blocker_id=first_user_id, blocked_id=second_user_id)
+		| models.Q(blocker_id=second_user_id, blocked_id=first_user_id)
+	).exists()
+
+
 def _waitlist_gate_response(email: str | None):
 	"""Return a Response if waitlist gating blocks the request, else None."""
 	if not getattr(settings, 'BETA_WAITLIST_ONLY', True):
@@ -232,6 +247,7 @@ class BuddyViewSet(viewsets.ViewSet):
 			buddy_ids.add(a_id)
 			buddy_ids.add(b_id)
 		buddy_ids.discard(user.id)
+		buddy_ids.difference_update(_blocked_user_ids(user))
 		return buddy_ids
 
 	@extend_schema(
@@ -262,7 +278,7 @@ class BuddyViewSet(viewsets.ViewSet):
 			from_user=user,
 			created_at__gte=timezone.now() - timedelta(days=30),
 		).values_list('to_user_id', flat=True)
-		excluded_user_ids = set(buddy_user_ids) | set(recently_swiped_ids) | {user.id}
+		excluded_user_ids = set(buddy_user_ids) | set(recently_swiped_ids) | _blocked_user_ids(user) | {user.id}
 
 		qs = (
 			Profile.objects.select_related('user')
@@ -331,6 +347,8 @@ class BuddyViewSet(viewsets.ViewSet):
 
 		if to_user.id == from_user.id:
 			return Response({'detail': 'Cannot connect to yourself.'}, status=status.HTTP_400_BAD_REQUEST)
+		if _users_blocked_each_other(from_user.id, to_user.id):
+			return Response({'detail': 'This user is unavailable.'}, status=status.HTTP_403_FORBIDDEN)
 
 		# Block if already buddies (partnership exists)
 		user_a, user_b = sorted([from_user, to_user], key=lambda u: u.id)
@@ -401,7 +419,7 @@ class BuddyViewSet(viewsets.ViewSet):
 		qs = BuddyRequest.objects.filter(
 			to_user=request.user,
 			status=BuddyRequest.STATUS_PENDING,
-		).order_by('-created_at')
+		).exclude(from_user_id__in=_blocked_user_ids(request.user)).order_by('-created_at')
 		return Response(BuddyRequestSerializer(qs, many=True, context={'request': request}).data)
 
 
@@ -422,6 +440,8 @@ class BuddyViewSet(viewsets.ViewSet):
 		).first()
 		if not buddy_request:
 			return Response({'detail': 'Invitation not found.'}, status=status.HTTP_404_NOT_FOUND)
+		if _users_blocked_each_other(buddy_request.from_user_id, buddy_request.to_user_id):
+			return Response({'detail': 'This user is unavailable.'}, status=status.HTTP_403_FORBIDDEN)
 
 		buddy_request.status = BuddyRequest.STATUS_ACCEPTED
 		buddy_request.responded_at = models.functions.Now()
@@ -513,6 +533,73 @@ class BuddyViewSet(viewsets.ViewSet):
 		buddy_request.save(update_fields=['status', 'responded_at', 'updated_at'])
 		return Response({'detail': 'Rejected.'}, status=status.HTTP_200_OK)
 
+	@extend_schema(
+		responses={200: DetailResponseSerializer, 400: DetailResponseSerializer, 404: DetailResponseSerializer},
+		description='Block another user and prevent direct discovery, invitations, and messaging.',
+	)
+	@action(detail=False, methods=['post'], url_path=r'block/(?P<user_id>[^/.]+)')
+	def block(self, request, user_id=None):
+		target = User.objects.filter(id=user_id, is_active=True, deleted=False).first()
+		if not target:
+			return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+		if target.id == request.user.id:
+			return Response({'detail': 'You cannot block yourself.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		_, created = UserBlock.objects.get_or_create(blocker=request.user, blocked=target)
+		BuddyRequest.objects.filter(
+			models.Q(from_user=request.user, to_user=target)
+			| models.Q(from_user=target, to_user=request.user),
+			status=BuddyRequest.STATUS_PENDING,
+		).update(status=BuddyRequest.STATUS_REJECTED, responded_at=timezone.now())
+		return Response(
+			{'detail': 'User blocked.' if created else 'User is already blocked.'},
+			status=status.HTTP_200_OK,
+		)
+
+	@extend_schema(
+		responses={200: DetailResponseSerializer},
+		description='Remove a user block created by the current user.',
+	)
+	@action(detail=False, methods=['post'], url_path=r'unblock/(?P<user_id>[^/.]+)')
+	def unblock(self, request, user_id=None):
+		UserBlock.objects.filter(blocker=request.user, blocked_id=user_id).delete()
+		return Response({'detail': 'User unblocked.'}, status=status.HTTP_200_OK)
+
+	@extend_schema(
+		responses={200: PublicUserSerializer(many=True)},
+		description='List users blocked by the current user.',
+	)
+	@action(detail=False, methods=['get'], url_path='blocked')
+	def blocked(self, request):
+		users = User.objects.filter(
+			user_blocks_received__blocker=request.user,
+			is_active=True,
+			deleted=False,
+		).order_by('name', 'id')
+		return Response(PublicUserSerializer(users, many=True, context={'request': request}).data)
+
+	@extend_schema(
+		request=ContentReportRequestSerializer,
+		responses={201: DetailResponseSerializer, 400: DetailResponseSerializer, 404: DetailResponseSerializer},
+		description='Report another user for moderation review.',
+	)
+	@action(detail=False, methods=['post'], url_path=r'report/(?P<user_id>[^/.]+)')
+	def report(self, request, user_id=None):
+		target = User.objects.filter(id=user_id, is_active=True, deleted=False).first()
+		if not target:
+			return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+		if target.id == request.user.id:
+			return Response({'detail': 'You cannot report yourself.'}, status=status.HTTP_400_BAD_REQUEST)
+		serializer = ContentReportRequestSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		ContentReport.objects.create(
+			reporter=request.user,
+			reported_user=target,
+			reason=serializer.validated_data['reason'],
+			details=serializer.validated_data.get('details', ''),
+		)
+		return Response({'detail': 'Report submitted.'}, status=status.HTTP_201_CREATED)
+
 
 	@extend_schema(
 		responses={200: BuddyProfileResponseSerializer, 404: DetailResponseSerializer},
@@ -526,6 +613,8 @@ class BuddyViewSet(viewsets.ViewSet):
 			return Response({'detail': 'Use your own profile endpoint for the current user.'}, status=status.HTTP_400_BAD_REQUEST)
 		other_user = User.objects.filter(id=user_id, deleted=False).first()
 		if not other_user:
+			return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+		if _users_blocked_each_other(request.user.id, other_user.id):
 			return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
 		profile, _ = Profile.objects.get_or_create(user=other_user)
 		return Response(BuddyProfileResponseSerializer({'user': other_user, 'profile': profile}, context={'request': request}).data)
@@ -1985,6 +2074,7 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
 		user = self.request.user
 		if not getattr(user, 'is_authenticated', False):
 			return Conversation.objects.none()
+		blocked_user_ids = _blocked_user_ids(user)
 		queryset = (
 			Conversation.objects.filter(
 				models.Q(members=user) |
@@ -2005,6 +2095,10 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
 				'messages',
 				filter=models.Q(messages__is_read=False) & ~models.Q(messages__sender=user),
 			)
+			)
+			.exclude(
+				models.Q(partnership__user_a_id__in=blocked_user_ids)
+				| models.Q(partnership__user_b_id__in=blocked_user_ids)
 			)
 		)
 		if self.action == 'archived':
@@ -2084,12 +2178,18 @@ class MessageViewSet(
 
 	def get_queryset(self):
 		user = self.request.user
+		blocked_user_ids = _blocked_user_ids(user)
 		qs = (
 			Message.objects.filter(
 				models.Q(conversation__members=user) |
 				models.Q(conversation__partnership__user_a=user) |
 				models.Q(conversation__partnership__user_b=user) |
 				models.Q(conversation__goal__members=user)
+			)
+			.exclude(sender_id__in=blocked_user_ids)
+			.exclude(
+				models.Q(conversation__partnership__user_a_id__in=blocked_user_ids)
+				| models.Q(conversation__partnership__user_b_id__in=blocked_user_ids)
 			)
 			.distinct()
 			.order_by('-created_at')
@@ -2105,6 +2205,11 @@ class MessageViewSet(
 		# Ensure user belongs to the conversation's partnership
 		if not _user_is_member_of_conversation(user.id, conversation):
 			raise PermissionDenied('You are not part of this conversation.')
+		if conversation.partnership_id:
+			participant_ids = [conversation.partnership.user_a_id, conversation.partnership.user_b_id]
+			other_user_id = next((user_id for user_id in participant_ids if user_id != user.id), None)
+			if other_user_id and _users_blocked_each_other(user.id, other_user_id):
+				raise PermissionDenied('Messaging is unavailable for this conversation.')
 		message = serializer.save(sender=user)
 		self._broadcast_conversation_update(conversation_id=conversation.id)
 		return message
@@ -2121,13 +2226,6 @@ class MessageViewSet(
 				user_ids = [conv.partnership.user_a_id, conv.partnership.user_b_id]
 			elif conv.goal_id:
 				user_ids = list(conv.goal.members.values_list('id', flat=True))
-		last_msg = (
-			Message.objects.select_related('sender')
-			.filter(conversation_id=conversation_id)
-			.order_by('-created_at')
-			.first()
-		)
-		last_message_payload = MessageSerializer(last_msg, context={'request': getattr(self, 'request', None)}).data if last_msg else None
 		member_names = [u.name for u in conv.members.all()] if conv.members.exists() else []
 		for uid in user_ids:
 			if ConversationMembership.objects.filter(
@@ -2136,9 +2234,27 @@ class MessageViewSet(
 				archived_at__isnull=False,
 			).exists():
 				continue
+			blocked_user_ids = _blocked_user_ids(uid)
+			if conv.partnership_id and (
+				conv.partnership.user_a_id in blocked_user_ids
+				or conv.partnership.user_b_id in blocked_user_ids
+			):
+				continue
+			last_msg = (
+				Message.objects.select_related('sender')
+				.filter(conversation_id=conversation_id)
+				.exclude(sender_id__in=blocked_user_ids)
+				.order_by('-created_at')
+				.first()
+			)
+			last_message_payload = MessageSerializer(
+				last_msg,
+				context={'request': getattr(self, 'request', None)},
+			).data if last_msg else None
 			unread_count = (
 				Message.objects.filter(conversation_id=conversation_id, is_read=False)
 				.exclude(sender_id=uid)
+				.exclude(sender_id__in=blocked_user_ids)
 				.count()
 			)
 			payload = {
@@ -2219,6 +2335,28 @@ class MessageViewSet(
 			)
 		self._broadcast_conversation_update(conversation_id=message.conversation_id)
 		return Response(payload)
+
+	@extend_schema(
+		request=ContentReportRequestSerializer,
+		responses={201: DetailResponseSerializer, 400: DetailResponseSerializer},
+		description='Report a message and its sender for moderation review.',
+	)
+	@action(detail=True, methods=['post'], url_path='report')
+	def report(self, request, pk=None):
+		message = self.get_object()
+		if message.sender_id == request.user.id:
+			return Response({'detail': 'You cannot report your own message.'}, status=status.HTTP_400_BAD_REQUEST)
+		serializer = ContentReportRequestSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		ContentReport.objects.create(
+			reporter=request.user,
+			reported_user=message.sender,
+			conversation=message.conversation,
+			message=message,
+			reason=serializer.validated_data['reason'],
+			details=serializer.validated_data.get('details', ''),
+		)
+		return Response({'detail': 'Report submitted.'}, status=status.HTTP_201_CREATED)
 
 
 class GoalCheckinViewSet(viewsets.ModelViewSet):

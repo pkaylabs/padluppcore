@@ -28,6 +28,7 @@ from .models import (
 	DevicePushToken,
 	Conversation,
 	ConversationMembership,
+	ContentReport,
 	GoalCheckin,
 	GoalCheckinBadge,
 	GoalCheckinReaction,
@@ -100,6 +101,16 @@ class DevicePushTokenRegisterSerializer(serializers.Serializer):
 
 class DevicePushTokenUnregisterSerializer(serializers.Serializer):
 	token = serializers.CharField(max_length=512, trim_whitespace=True)
+
+
+class ContentReportRequestSerializer(serializers.Serializer):
+	reason = serializers.ChoiceField(choices=ContentReport.REASON_CHOICES)
+	details = serializers.CharField(
+		required=False,
+		allow_blank=True,
+		max_length=2000,
+		trim_whitespace=True,
+	)
 
 
 class UserUpdateRequestSerializer(serializers.Serializer):
