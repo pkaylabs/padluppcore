@@ -294,7 +294,13 @@ REST_KNOX = {
 # Browser clients are restricted to explicitly configured origins.
 CORS_ALLOWED_ORIGINS = env_list(
     'DJANGO_CORS_ALLOWED_ORIGINS',
-    ('http://localhost:8080', 'http://127.0.0.1:8080') if DEBUG else ('https://app.padlupp.com',),
+    ('http://localhost:8080', 'http://127.0.0.1:8080')
+    if DEBUG
+    else (
+        'https://app.padlupp.com',
+        'https://padlupp.com',
+        'https://www.padlupp.com',
+    ),
 )
 
 # Paystack configuration

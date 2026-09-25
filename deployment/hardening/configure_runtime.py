@@ -40,7 +40,9 @@ def main() -> None:
         'DJANGO_SECRET_KEY': django_secret,
         'DJANGO_DEBUG': '0',
         'DJANGO_ALLOWED_HOSTS': 'api.padlupp.com,127.0.0.1',
-        'DJANGO_CORS_ALLOWED_ORIGINS': 'https://app.padlupp.com',
+        'DJANGO_CORS_ALLOWED_ORIGINS': (
+            'https://app.padlupp.com,https://padlupp.com,https://www.padlupp.com'
+        ),
         'DJANGO_CSRF_TRUSTED_ORIGINS': 'https://api.padlupp.com',
         'DATABASE_PATH': '/var/lib/padlupp/db.sqlite3',
         'MEDIA_ROOT': '/var/lib/padlupp/assets',
