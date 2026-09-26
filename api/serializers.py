@@ -73,6 +73,7 @@ class UserSerializer(serializers.ModelSerializer):
 			'notify_on_new_message',
 			'notify_on_new_match',
 			'notify_on_reminders',
+			'notify_on_milestones',
 		]
 
 
@@ -90,6 +91,7 @@ class NotificationPreferencesSerializer(serializers.ModelSerializer):
 			'notify_on_new_message',
 			'notify_on_new_match',
 			'notify_on_reminders',
+			'notify_on_milestones',
 		]
 
 
@@ -273,6 +275,7 @@ class RegisterRequestSerializer(serializers.Serializer):
 	password = serializers.CharField()
 	name = serializers.CharField()
 	phone = serializers.CharField(required=False, allow_blank=True)
+	referral_token = serializers.UUIDField(required=False, allow_null=True)
 
 class RegisterResponseSerializer(serializers.Serializer):
 	user = UserSerializer(read_only=True)  # Should match UserSerializer fields
@@ -282,6 +285,28 @@ class RegisterResponseSerializer(serializers.Serializer):
 class LongestStreakResponseSerializer(serializers.Serializer):
 	longest_streak_count = serializers.IntegerField()
 	current_streak_count = serializers.IntegerField()
+
+
+class AwardProgressSerializer(serializers.Serializer):
+	key = serializers.CharField()
+	title = serializers.CharField()
+	description = serializers.CharField()
+	current = serializers.IntegerField()
+	target = serializers.IntegerField()
+	unlocked = serializers.BooleanField()
+	unlocked_at = serializers.DateTimeField(allow_null=True)
+
+
+class AwardCategorySerializer(serializers.Serializer):
+	key = serializers.CharField()
+	title = serializers.CharField()
+	awards = AwardProgressSerializer(many=True)
+
+
+class AwardsResponseSerializer(serializers.Serializer):
+	unlocked_count = serializers.IntegerField()
+	total_count = serializers.IntegerField()
+	categories = AwardCategorySerializer(many=True)
 
 
 
@@ -954,6 +979,7 @@ class GoogleAuthRequestSerializer(serializers.Serializer):
 	# Optional overrides/extra fields (Google does not provide phone)
 	name = serializers.CharField(required=False, allow_blank=True)
 	phone = serializers.CharField(required=False, allow_blank=True)
+	referral_token = serializers.UUIDField(required=False, allow_null=True)
 
 
 class GoogleAuthResponseSerializer(serializers.Serializer):

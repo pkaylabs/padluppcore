@@ -3,6 +3,7 @@ import uuid
 from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
+from django.utils import timezone
 
 from padluppcore.utils.constants import StatusEnum
 from padluppcore.utils.models import TimeStampedModel
@@ -235,6 +236,46 @@ class Notification(TimeStampedModel):
 	type = models.CharField(max_length=50)
 	payload = models.JSONField(default=dict, blank=True)
 	is_read = models.BooleanField(default=False)
+
+
+class UserAward(TimeStampedModel):
+	user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='awards')
+	award_key = models.CharField(max_length=64)
+	unlocked_at = models.DateTimeField(default=timezone.now)
+	progress_snapshot = models.PositiveIntegerField(default=0)
+
+	class Meta:
+		constraints = [
+			models.UniqueConstraint(fields=['user', 'award_key'], name='uniq_user_award_key'),
+		]
+		indexes = [
+			models.Index(fields=['award_key', '-unlocked_at']),
+		]
+
+
+class ReferralInvite(TimeStampedModel):
+	inviter = models.ForeignKey(
+		settings.AUTH_USER_MODEL,
+		on_delete=models.CASCADE,
+		related_name='referral_invites',
+	)
+	email = models.EmailField(unique=True)
+	name = models.CharField(max_length=255, blank=True, default='')
+	token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+	referred_user = models.OneToOneField(
+		settings.AUTH_USER_MODEL,
+		on_delete=models.SET_NULL,
+		null=True,
+		blank=True,
+		related_name='referral_source',
+	)
+	accepted_at = models.DateTimeField(null=True, blank=True)
+
+	class Meta:
+		indexes = [
+			models.Index(fields=['inviter', '-created_at']),
+			models.Index(fields=['email', 'accepted_at']),
+		]
 
 
 class DevicePushToken(TimeStampedModel):

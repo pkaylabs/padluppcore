@@ -14,7 +14,8 @@ from accounts.models import User
 from padluppcore.utils.email import EmailSendError, send_mailgun_email
 
 from .activity import record_user_activity
-from .models import Conversation, ConversationMembership, Evidence, Goal, GoalMembership, Message, Notification, Task, TimerSession, UserBlock
+from .awards import evaluate_user_awards
+from .models import Conversation, ConversationMembership, Evidence, Goal, GoalMembership, Message, Notification, Task, TimerSession, UserBlock, UserDailyActivity
 from .presence import get_globally_online_user_ids, get_online_user_ids
 from .push import enqueue_notification_push
 from .serializers import MessageSerializer
@@ -67,6 +68,7 @@ def _notification_preference_enabled(user, notification_type: str) -> bool:
         'goal_shared': 'notify_on_new_match',
         'goal_joined': 'notify_on_new_match',
         'inactivity_nudge': 'notify_on_reminders',
+        'milestone_unlocked': 'notify_on_milestones',
     }
     preference_field = preference_by_type.get((notification_type or '').strip())
     if not preference_field:
@@ -270,6 +272,23 @@ def sync_goal_members(sender, instance: Goal, created: bool, **kwargs):
         Goal.objects.filter(id=goal.id, is_shared=False).update(is_shared=True)
 
 
+@receiver(post_save, sender=Goal)
+def evaluate_goal_awards(sender, instance: Goal, created: bool, **kwargs):
+    if kwargs.get('raw'):
+        return
+    user_ids = set(instance.members.values_list('id', flat=True))
+    if instance.user_id:
+        user_ids.add(instance.user_id)
+    if instance.partnership_id:
+        user_ids.update(
+            user_id
+            for user_id in (instance.partnership.user_a_id, instance.partnership.user_b_id)
+            if user_id
+        )
+    for user in User.objects.filter(id__in=user_ids, is_active=True, deleted=False):
+        evaluate_user_awards(user)
+
+
 @receiver(post_save, sender=GoalMembership)
 def sync_goal_group_conversation(sender, instance: GoalMembership, created: bool, **kwargs):
     if kwargs.get('raw'):
@@ -301,6 +320,16 @@ def sync_goal_group_conversation(sender, instance: GoalMembership, created: bool
     if not goal.is_shared:
         Goal.objects.filter(id=goal.id, is_shared=False).update(is_shared=True)
     _broadcast_conversation_state(conversation.id)
+
+    for user in User.objects.filter(id__in=member_ids, is_active=True, deleted=False):
+        evaluate_user_awards(user)
+
+
+@receiver(post_save, sender=UserDailyActivity)
+def evaluate_streak_awards(sender, instance: UserDailyActivity, created: bool, **kwargs):
+    if kwargs.get('raw') or not created:
+        return
+    evaluate_user_awards(instance.user)
 
 
 @receiver(post_save, sender=Task)
@@ -412,6 +441,11 @@ def _notification_email_content(notification: Notification) -> tuple[str, str]:
     if ntype == 'buddy_request_accepted':
         subject = 'Connection request accepted'
         text = 'Your connection request was accepted. Open the app to connect with them now.'
+        return subject, text
+
+    if ntype == 'milestone_unlocked':
+        subject = payload.get('title') or 'Milestone unlocked'
+        text = payload.get('message') or 'You unlocked a new Padlupp award. Open the app to view it.'
         return subject, text
 
     subject = 'New notification'

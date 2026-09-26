@@ -75,6 +75,8 @@ def _notification_content(notification: Notification) -> tuple[str, str, str]:
 		return 'Time to check in', payload.get('message') or 'Keep your momentum going with a quick update.', f"/goals/{payload.get('goal_id', '')}"
 	if notification_type == 'inactivity_nudge':
 		return payload.get('title') or 'Ready for your next step?', payload.get('message') or 'A small update today can restart your momentum.', '/goals'
+	if notification_type == 'milestone_unlocked':
+		return payload.get('title') or 'Milestone unlocked', payload.get('message') or 'You earned a new Padlupp award.', '/milestones'
 	if notification_type in {'new_task', 'review_requested', 'evidence_submitted', 'task_approved', 'task_changes_requested', 'goal_shared'}:
 		goal_id = payload.get('goal_id')
 		path = f'/goals/{goal_id}' if goal_id else '/notifications'

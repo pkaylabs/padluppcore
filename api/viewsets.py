@@ -25,10 +25,12 @@ from google.oauth2 import id_token as google_id_token
 
 from padluppcore.utils.email import EmailSendError, send_mailgun_email
 from .activity import dt_to_local_date, get_user_tzinfo, record_user_activity
+from .awards import awards_payload_for_user, claim_referral
 
 from accounts.models import AccountDeletionRequest, PasswordResetOTP, User
-from .models import BuddyRequest, ContentReport, Conversation, ConversationMembership, DevicePushToken, Evidence, Event, Goal, GoalCheckin, GoalCheckinBadge, GoalCheckinEvidenceView, GoalCheckinReaction, GoalMembership, Match, Message, Notification, Partnership, Profile, SubTask, Task, TimerSession, UserBlock, UserDailyActivity, Waitlister
+from .models import BuddyRequest, ContentReport, Conversation, ConversationMembership, DevicePushToken, Evidence, Event, Goal, GoalCheckin, GoalCheckinBadge, GoalCheckinEvidenceView, GoalCheckinReaction, GoalMembership, Match, Message, Notification, Partnership, Profile, ReferralInvite, SubTask, Task, TimerSession, UserBlock, Waitlister
 from .matching import compatibility_details, profile_is_complete
+from .streaks import get_streak_stats
 from .serializers import (
 	BuddyConnectSerializer,
 	BuddyFinderProfileSerializer,
@@ -65,6 +67,7 @@ from .serializers import (
 	UserSerializer,
 	WaitlisterSerializer,
 	LongestStreakResponseSerializer,
+	AwardsResponseSerializer,
 	ConversationRenameRequestSerializer,
 )
 from .serializers import (
@@ -788,6 +791,7 @@ class OnboardingViewSet(viewsets.ViewSet):
 
 		user = User.objects.create_user(email=email, password=password, name=name, phone=phone)
 		Profile.objects.get_or_create(user=user)
+		claim_referral(request.data.get('referral_token'), user)
 		# auto-login after registration
 		_set_last_login(user)
 		token = AuthToken.objects.create(user)[1]
@@ -1102,6 +1106,20 @@ class AuthViewSet(viewsets.ViewSet):
 		if User.objects.filter(email__iexact=email).exists():
 			return Response({'detail': 'That email already belongs to an existing user.'}, status=status.HTTP_400_BAD_REQUEST)
 
+		existing_referral = ReferralInvite.objects.filter(email__iexact=email).first()
+		if existing_referral and existing_referral.inviter_id != request.user.id:
+			return Response(
+				{'detail': 'That email has already been invited.'},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+		referral_invite, _ = ReferralInvite.objects.get_or_create(
+			email=email,
+			defaults={'inviter': request.user, 'name': name},
+		)
+		if name and not referral_invite.name:
+			referral_invite.name = name
+			referral_invite.save(update_fields=['name', 'updated_at'])
+
 		# Add to waitlist (so beta gating allows signup).
 		waitlister, created = Waitlister.objects.get_or_create(
 			email=email,
@@ -1112,7 +1130,7 @@ class AuthViewSet(viewsets.ViewSet):
 			waitlister.save(update_fields=['name', 'updated_at'])
 
 		inviter_name = (getattr(request.user, 'name', '') or '').strip() or 'Someone'
-		platform_url = 'https://app.padlupp.com/'
+		platform_url = f'{_app_base_url()}/signup?ref={referral_invite.token}'
 		subject = "You're invited to Padlupp"
 		text = (
 			f"Hello {name}\n\n"
@@ -1295,6 +1313,7 @@ class AuthViewSet(viewsets.ViewSet):
 			user.email_verified = True
 		user.save()
 		Profile.objects.get_or_create(user=user)
+		claim_referral(request.data.get('referral_token'), user)
 		_set_last_login(user)
 		token = AuthToken.objects.create(user)[1]
 		return Response({'user': UserSerializer(user, context={'request': request}).data, 'token': token}, status=status.HTTP_201_CREATED)
@@ -1349,6 +1368,7 @@ class AuthViewSet(viewsets.ViewSet):
 				user.email_verified = True
 			user.save()
 			Profile.objects.get_or_create(user=user)
+			claim_referral(request.data.get('referral_token'), user)
 			created = True
 		else:
 			if payload.get('email_verified') and not user.email_verified:
@@ -2642,44 +2662,6 @@ class WaitlistViewSet(viewsets.ModelViewSet):
 class StatsViewSet(viewsets.ViewSet):
 	permission_classes = [permissions.IsAuthenticated]
 
-	def _get_user_tzinfo(self, user):
-		"""Return tzinfo for day-boundary calculations."""
-		return get_user_tzinfo(user)
-
-	def _dt_to_local_date(self, dt, tzinfo):
-		return dt_to_local_date(dt, tzinfo)
-
-	def _longest_consecutive_days(self, dates) -> int:
-		unique = sorted(set(dates))
-		if not unique:
-			return 0
-		longest = 1
-		current = 1
-		prev = unique[0]
-		for d in unique[1:]:
-			if d == (prev + timedelta(days=1)):
-				current += 1
-			else:
-				current = 1
-			if current > longest:
-				longest = current
-			prev = d
-		return longest
-
-	def _current_streak_days(self, dates, end_date) -> int:
-		"""Consecutive active days ending on end_date.
-
-		If end_date is not active, current streak is 0.
-		"""
-		if not dates or end_date not in dates:
-			return 0
-		count = 1
-		cursor = end_date
-		while (cursor - timedelta(days=1)) in dates:
-			count += 1
-			cursor = cursor - timedelta(days=1)
-		return count
-
 	@extend_schema(
 		responses={200: LongestStreakResponseSerializer},
 		description=(
@@ -2693,97 +2675,17 @@ class StatsViewSet(viewsets.ViewSet):
 	)
 	@action(detail=False, methods=['get'], url_path='longest-streak')
 	def longest_streak(self, request):
-		user = request.user
-		tzinfo = self._get_user_tzinfo(user)
-		active_dates = set()
-
-		for activity_date in (
-			UserDailyActivity.objects.filter(user=user)
-			.values_list('activity_date', flat=True)
-			.iterator()
-		):
-			if activity_date:
-				active_dates.add(activity_date)
-
-		# Backward-compatibility path: if no normalized rows exist yet,
-		# reconstruct from historical model data.
-		if not active_dates:
-			# Count login as activity so users can build a streak by showing up daily.
-			# `last_login` only stores one timestamp; include Knox token creation dates
-			# to preserve historical login days for streak calculations.
-			for token_created_at in (
-				AuthToken.objects.filter(user=user)
-				.values_list('created', flat=True)
-				.iterator()
-			):
-				d = self._dt_to_local_date(token_created_at, tzinfo)
-				if d:
-					active_dates.add(d)
-
-			login_d = self._dt_to_local_date(getattr(user, 'last_login', None), tzinfo)
-			if login_d:
-				active_dates.add(login_d)
-
-			for started_at, created_at in (
-				TimerSession.objects.filter(user=user)
-				.values_list('started_at', 'created_at')
-				.iterator()
-			):
-				d = self._dt_to_local_date(started_at or created_at, tzinfo)
-				if d:
-					active_dates.add(d)
-
-			for submitted_at, created_at in (
-				Evidence.objects.filter(submitted_by=user)
-				.values_list('submitted_at', 'created_at')
-				.iterator()
-			):
-				d = self._dt_to_local_date(submitted_at or created_at, tzinfo)
-				if d:
-					active_dates.add(d)
-
-			for updated_at, created_at in (
-				Task.objects.filter(owner=user, status=Task.STATUS_COMPLETED)
-				.values_list('updated_at', 'created_at')
-				.iterator()
-			):
-				d = self._dt_to_local_date(updated_at or created_at, tzinfo)
-				if d:
-					active_dates.add(d)
+		return Response(get_streak_stats(request.user), status=status.HTTP_200_OK)
 
 
-			# Include goals owned by user or partnership goals where user is a partner
-			for created_at, updated_at in (
-				Goal.objects.filter(
-					models.Q(user=user) |
-					models.Q(partnership__user_a=user) |
-					models.Q(partnership__user_b=user)
-				)
-				.values_list('created_at', 'updated_at')
-				.iterator()
-			):
-				created_d = self._dt_to_local_date(created_at, tzinfo)
-				if created_d:
-					active_dates.add(created_d)
-				updated_d = self._dt_to_local_date(updated_at, tzinfo)
-				if updated_d:
-					active_dates.add(updated_d)
+class AwardViewSet(viewsets.ViewSet):
+	permission_classes = [permissions.IsAuthenticated]
 
-			for created_at in (
-				Message.objects.filter(sender=user)
-				.values_list('created_at', flat=True)
-				.iterator()
-			):
-				d = self._dt_to_local_date(created_at, tzinfo)
-				if d:
-					active_dates.add(d)
-
-		local_today = timezone.localtime(timezone.now(), tzinfo).date()
-		longest = self._longest_consecutive_days(active_dates)
-		current = self._current_streak_days(active_dates, local_today)
-		return Response(
-			{'longest_streak_count': int(longest), 'current_streak_count': int(current)},
-			status=status.HTTP_200_OK,
-		)
+	@extend_schema(
+		responses={200: AwardsResponseSerializer},
+		description='Return milestone award progress and permanent unlocks for the current user.',
+	)
+	def list(self, request):
+		return Response(awards_payload_for_user(request.user), status=status.HTTP_200_OK)
 
 

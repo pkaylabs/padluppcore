@@ -16,7 +16,7 @@ from django.utils import timezone
 from datetime import datetime, timezone as dt_timezone, timedelta
 
 from accounts.models import User
-from api.models import BuddyRequest, ContentReport, DevicePushToken, Partnership, Profile, Conversation, ConversationMembership, Message, Goal, GoalCheckin, GoalCheckinBadge, GoalMembership, Match, Task, TimerSession, Evidence, Notification, UserBlock, UserDailyActivity, InactivityNudgeLog, CheckinReminderLog, SubTaskReminderLog, Waitlister
+from api.models import BuddyRequest, ContentReport, DevicePushToken, Partnership, Profile, Conversation, ConversationMembership, Message, Goal, GoalCheckin, GoalCheckinBadge, GoalMembership, Match, Task, TimerSession, Evidence, Notification, ReferralInvite, UserAward, UserBlock, UserDailyActivity, InactivityNudgeLog, CheckinReminderLog, SubTaskReminderLog, Waitlister
 from api.serializers import UserSerializer, MessageSerializer
 from api.consumers import _ScopeRequest
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -478,6 +478,7 @@ class StatsEndpointsTests(APITestCase):
 		self.assertEqual(resp.data.get('longest_streak_count'), 2)
 		self.assertEqual(resp.data.get('current_streak_count'), 2)
 
+
 	def test_longest_streak_uses_daily_activity_source_of_truth(self):
 		url = reverse('stats-longest-streak')
 		day1 = datetime(2026, 1, 2, 10, 0, 0, tzinfo=dt_timezone.utc)
@@ -520,6 +521,115 @@ class StatsEndpointsTests(APITestCase):
 
 		evidence = Evidence.objects.create(submitted_by=self.user, task=task, text='x')
 		Evidence.objects.filter(id=evidence.id).update(submitted_at=d2)
+
+
+@override_settings(EMAIL_NOTIFICATIONS_ENABLED=False, FIREBASE_PUSH_ENABLED=False, BETA_WAITLIST_ONLY=False)
+class AwardsEndpointsTests(APITestCase):
+	def setUp(self):
+		self.user = User.objects.create_user(
+			email='awards@test.com', phone='+10000001001', name='Awards User', password='pass1234'
+		)
+		self.other = User.objects.create_user(
+			email='award-buddy@test.com', phone='+10000001002', name='Award Buddy', password='pass1234'
+		)
+		Profile.objects.get_or_create(user=self.user, defaults={'time_zone': 'UTC'})
+		Profile.objects.get_or_create(user=self.other, defaults={'time_zone': 'UTC'})
+		self.client.force_authenticate(user=self.user)
+
+	def _award_payload(self, key):
+		response = self.client.get(reverse('awards-list'))
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		return next(
+			award
+			for category in response.data['categories']
+			for award in category['awards']
+			if award['key'] == key
+		)
+
+	def test_goal_awards_unlock_and_remain_idempotent(self):
+		goal = Goal.objects.create(user=self.user, title='Ship it')
+		self.assertTrue(UserAward.objects.filter(user=self.user, award_key='goal_started').exists())
+
+		goal.status = 'completed'
+		goal.save(update_fields=['status', 'updated_at'])
+		self.assertTrue(UserAward.objects.filter(user=self.user, award_key='goal_completed').exists())
+		self.assertEqual(UserAward.objects.filter(user=self.user, award_key='goal_completed').count(), 1)
+		self.assertTrue(self._award_payload('goal_completed')['unlocked'])
+
+		goal.save(update_fields=['updated_at'])
+		self.assertEqual(UserAward.objects.filter(user=self.user, award_key='goal_completed').count(), 1)
+		self.assertEqual(
+			Notification.objects.filter(
+				user=self.user, type='milestone_unlocked', payload__award_key='goal_completed'
+			).count(),
+			1,
+		)
+
+	def test_five_goal_progress_and_team_player(self):
+		for number in range(5):
+			Goal.objects.create(user=self.user, title=f'Completed {number}', status='completed')
+
+		five_goal_award = self._award_payload('five_goals_completed')
+		self.assertTrue(five_goal_award['unlocked'])
+		self.assertEqual(five_goal_award['current'], 5)
+
+		shared_goal = Goal.objects.create(user=self.user, title='Shared work')
+		Goal.objects.filter(id=shared_goal.id).update(is_shared=True)
+		self.assertFalse(UserAward.objects.filter(user=self.user, award_key='team_player').exists())
+		GoalMembership.objects.get_or_create(
+			goal=shared_goal, user=self.other, defaults={'added_by': self.user}
+		)
+		self.assertTrue(UserAward.objects.filter(user=self.user, award_key='team_player').exists())
+		self.assertTrue(UserAward.objects.filter(user=self.other, award_key='team_player').exists())
+
+	def test_streak_awards_use_longest_streak(self):
+		for day in range(1, 4):
+			timestamp = datetime(2026, 1, day, 12, 0, tzinfo=dt_timezone.utc)
+			UserDailyActivity.objects.create(
+				user=self.user,
+				activity_date=timestamp.date(),
+				first_activity_at=timestamp,
+				last_activity_at=timestamp,
+				source='test',
+			)
+
+		self.assertTrue(UserAward.objects.filter(user=self.user, award_key='streak_3').exists())
+		self.assertFalse(UserAward.objects.filter(user=self.user, award_key='streak_7').exists())
+
+	def test_referral_is_credited_only_after_matching_signup(self):
+		with patch('api.viewsets.send_mailgun_email'):
+			invite_response = self.client.post(
+				reverse('auth-invite'),
+				{'email': 'referred@test.com', 'name': 'Referred User'},
+				format='json',
+			)
+		self.assertEqual(invite_response.status_code, status.HTTP_200_OK)
+		invite = ReferralInvite.objects.get(email='referred@test.com')
+		self.assertFalse(UserAward.objects.filter(user=self.user, award_key='successful_referral').exists())
+
+		self.client.force_authenticate(user=None)
+		register_response = self.client.post(
+			reverse('onboarding-register'),
+			{
+				'email': 'referred@test.com',
+				'name': 'Referred User',
+				'password': 'Pass1234!',
+				'referral_token': str(invite.token),
+			},
+			format='json',
+		)
+		self.assertEqual(register_response.status_code, status.HTTP_201_CREATED)
+		invite.refresh_from_db()
+		self.assertEqual(invite.referred_user.email, 'referred@test.com')
+		self.assertTrue(UserAward.objects.filter(user=self.user, award_key='successful_referral').exists())
+
+	def test_milestone_notification_preference_is_respected(self):
+		self.user.notify_on_milestones = False
+		self.user.save(update_fields=['notify_on_milestones'])
+		Goal.objects.create(user=self.user, title='Quiet award')
+
+		self.assertTrue(UserAward.objects.filter(user=self.user, award_key='goal_started').exists())
+		self.assertFalse(Notification.objects.filter(user=self.user, type='milestone_unlocked').exists())
 
 
 @override_settings(CRON_SHARED_SECRET='test-cron-secret')

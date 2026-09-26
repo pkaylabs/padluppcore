@@ -10,6 +10,7 @@ from .ws_docs import WebSocketDocsView
 from .views import GoalCheckinReminderCronView, InactiveUserNudgeView
 
 from .viewsets import (
+	AwardViewSet,
 	AuthViewSet,
 	BuddyViewSet,
 	ConversationViewSet,
@@ -50,6 +51,7 @@ router.register('conversations', ConversationViewSet, basename='conversations')
 router.register('messages', MessageViewSet, basename='messages')
 router.register('waitlist', WaitlistViewSet, basename='waitlist')
 router.register('stats', StatsViewSet, basename='stats')
+router.register('awards', AwardViewSet, basename='awards')
 
 
 

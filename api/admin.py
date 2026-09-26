@@ -27,6 +27,8 @@ from .models import (
     Message,
 	InactivityNudgeLog,
 	Waitlister,
+	ReferralInvite,
+	UserAward,
 )
 
 
@@ -147,6 +149,21 @@ class ContentReportAdmin(admin.ModelAdmin):
 class WaitlisterAdmin(admin.ModelAdmin):
 	list_display = ('id', 'email', 'name', 'country', 'created_at')
 	search_fields = ('email', 'name', 'country')
+
+
+@admin.register(ReferralInvite)
+class ReferralInviteAdmin(admin.ModelAdmin):
+	list_display = ('id', 'email', 'inviter', 'referred_user', 'accepted_at', 'created_at')
+	search_fields = ('email', 'inviter__email', 'referred_user__email')
+	list_filter = ('accepted_at', 'created_at')
+	readonly_fields = ('token', 'accepted_at', 'created_at', 'updated_at')
+
+
+@admin.register(UserAward)
+class UserAwardAdmin(admin.ModelAdmin):
+	list_display = ('id', 'user', 'award_key', 'unlocked_at', 'progress_snapshot')
+	search_fields = ('user__email', 'user__name', 'award_key')
+	list_filter = ('award_key', 'unlocked_at')
 
 
 @admin.register(InactivityNudgeLog)

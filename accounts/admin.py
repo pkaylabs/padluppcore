@@ -55,7 +55,14 @@ class UserAdmin(BaseUserAdmin):
 		(None, {'fields': ('email', 'password')}),
 		('Personal info', {'fields': ('name', 'phone', 'avatar')}),
 		('Verification', {'fields': ('phone_verified', 'email_verified')}),
-		('Preferences', {'fields': ('preferred_notification_email', 'preferred_notification_phone')}),
+		('Preferences', {'fields': (
+			'preferred_notification_email',
+			'preferred_notification_phone',
+			'notify_on_new_message',
+			'notify_on_new_match',
+			'notify_on_reminders',
+			'notify_on_milestones',
+		)}),
 		('Permissions', {
 			'fields': ('is_active', 'is_staff', 'is_superuser', 'groups', 'user_permissions'),
 		}),
