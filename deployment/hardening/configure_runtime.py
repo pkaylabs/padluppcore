@@ -14,6 +14,9 @@ SOURCE_ENV = Path('/padlupp/padluppcore/padluppcore/.env')
 APP_ENV = Path('/etc/padluppcore/app.env')
 CRON_ENV = Path('/etc/padluppcore/cron.env')
 KEY_PATTERN = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)=')
+WEB_GOOGLE_OAUTH_CLIENT_ID = (
+    '674368689981-4lo3fedmr76gqrfftka13vm29htlq1kg.apps.googleusercontent.com'
+)
 
 
 def existing_value(lines: list[str], key: str) -> str | None:
@@ -22,6 +25,11 @@ def existing_value(lines: list[str], key: str) -> str | None:
         if line.startswith(prefix):
             return line[len(prefix):].strip().strip('"\'')
     return None
+
+
+def merge_csv_values(existing: str | None, required: str) -> str:
+    values = [value.strip() for value in (existing or '').split(',') if value.strip()]
+    return ','.join(dict.fromkeys((*values, required)))
 
 
 def main() -> None:
@@ -36,6 +44,10 @@ def main() -> None:
     lines = source.read_text(encoding='utf-8').splitlines() if source.exists() else []
     django_secret = existing_value(lines, 'DJANGO_SECRET_KEY') or secrets.token_urlsafe(48)
     cron_secret = existing_value(lines, 'CRON_SHARED_SECRET') or secrets.token_urlsafe(48)
+    google_client_ids = merge_csv_values(
+        existing_value(lines, 'GOOGLE_OAUTH2_CLIENT_IDS'),
+        WEB_GOOGLE_OAUTH_CLIENT_ID,
+    )
     managed = {
         'DJANGO_SECRET_KEY': django_secret,
         'DJANGO_DEBUG': '0',
@@ -48,6 +60,7 @@ def main() -> None:
         'MEDIA_ROOT': '/var/lib/padlupp/assets',
         'PUBLIC_BASE_URL': 'https://api.padlupp.com',
         'PADLUPP_APP_URL': 'https://app.padlupp.com',
+        'GOOGLE_OAUTH2_CLIENT_IDS': google_client_ids,
         'CRON_SHARED_SECRET': cron_secret,
     }
 
