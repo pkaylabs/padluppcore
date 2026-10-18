@@ -52,7 +52,7 @@ Set `PRIVATE_MEDIA_ROOT=/var/lib/padlupp/private-media` in the service environme
 and provision that directory for the application account before migration:
 
 ```bash
-sudo install -d -m 0700 -o padlupp-app -g padlupp-app /var/lib/padlupp/private-media
+sudo install -d -m 0700 -o padlupp-app -g www-data /var/lib/padlupp/private-media
 ```
 
 Keep private storage outside every Nginx alias and public media directory. Do
@@ -75,8 +75,8 @@ From `/padlupp/padluppcore`:
 
 ```bash
 sudo /padlupp/padluppcore/venv/bin/python -m pip install -r requirements.txt
-sudo -u padlupp-app /padlupp/padluppcore/venv/bin/python manage.py migrate --noinput
-sudo -u padlupp-app /padlupp/padluppcore/venv/bin/python manage.py collectstatic --noinput
+sudo -u padlupp-app env DJANGO_ENV_FILE=/etc/padluppcore/app.env /padlupp/padluppcore/venv/bin/python manage.py migrate --noinput
+sudo env DJANGO_ENV_FILE=/etc/padluppcore/app.env /padlupp/padluppcore/venv/bin/python manage.py collectstatic --noinput
 sudo systemctl restart padluppcore-daphne
 ```
 
