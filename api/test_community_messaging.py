@@ -338,7 +338,8 @@ class CommunityMessagingPolicyTests(APITestCase):
         mail.assert_not_called()
         push.assert_not_called()
         from .push import send_notification_push
-        with patch('api.push._access_token') as access_token:
+        # The synchronous worker call must not close the TestCase transaction.
+        with patch('api.push._access_token') as access_token, patch('api.push.close_old_connections'):
             send_notification_push(notification.pk)
         access_token.assert_not_called()
 

@@ -120,7 +120,10 @@ class DevicePushTokenTests(APITestCase):
 		)
 		mock_post.return_value.ok = True
 
-		send_notification_push(notification.id)
+		# Production uses a worker connection, not this TestCase transaction.
+		with patch('api.push.close_old_connections') as connection_cleanup:
+			send_notification_push(notification.id)
+		self.assertEqual(connection_cleanup.call_count, 2)
 
 		request = mock_post.call_args
 		self.assertIn('/v1/projects/firebase-project/messages:send', request.args[0])
@@ -145,7 +148,8 @@ class DevicePushTokenTests(APITestCase):
 		)
 		mock_post.return_value.ok = True
 
-		send_notification_push(notification.id)
+		with patch('api.push.close_old_connections'):
+			send_notification_push(notification.id)
 
 		message = mock_post.call_args.kwargs['json']['message']
 		self.assertEqual(message['notification']['title'], 'New connection request')

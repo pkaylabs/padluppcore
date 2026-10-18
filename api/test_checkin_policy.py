@@ -346,7 +346,8 @@ class CheckinPolicyTests(APITestCase):
                 CommunityTaskMembership.objects.filter(task=self.task, user=self.member).update(state=state)
                 self.assertEqual(self.client.get(f'/api-v1/notifications/{notice.pk}/').status_code, 404)
         from .push import send_notification_push
-        with patch('api.push._access_token') as token:
+        # The synchronous worker call must not close the TestCase transaction.
+        with patch('api.push._access_token') as token, patch('api.push.close_old_connections'):
             send_notification_push(notice.pk)
         token.assert_not_called()
 
