@@ -1,10 +1,21 @@
 # Cron jobs (server)
 
-This project exposes two scheduler-only endpoints. Production requires the
+This project exposes three scheduler-only endpoints. Production requires the
 `X-Padlupp-Cron-Secret` header and Nginx denies public access to `/api-v1/cron/`:
 
 - `POST /api-v1/cron/nudge-inactive-users/`
 - `POST /api-v1/cron/checkin-reminders/`
+- `POST /api-v1/cron/community-cycles/`
+
+The existing `checkin` runner mode also invokes community cycles. Run `community`
+hourly as shown below for due prompts, pre-deadline reminders, missed check-ins
+and 28-day inactivity reviews. It never removes members automatically. All
+community jobs are idempotent. Completed, archived and frozen pods are excluded.
+Pod deadlines use UTC calendar days; an unanswered check-in gets its final
+reminder from 20:00 UTC and is marked missed after that UTC day ends. Existing
+personal-goal reminder timing is unchanged.
+Check-in evidence no longer expires automatically; authorized internal admins
+can remove sensitive evidence through audited moderation actions.
 
 On the server, the simplest/most reliable approach is to call Daphne directly over localhost (no DNS/TLS):
 
@@ -22,8 +33,8 @@ bash deployment/cron/run_cron_endpoints.sh checkin
 Or with curl:
 
 ```bash
-curl -sS --fail-with-body -X POST http://127.0.0.1:8000/api-v1/cron/nudge-inactive-users/
-curl -sS --fail-with-body -X POST http://127.0.0.1:8000/api-v1/cron/checkin-reminders/
+curl -sS --fail-with-body -X POST -H "X-Padlupp-Cron-Secret: $PADLUPPCORE_CRON_SECRET" http://127.0.0.1:8000/api-v1/cron/nudge-inactive-users/
+curl -sS --fail-with-body -X POST -H "X-Padlupp-Cron-Secret: $PADLUPPCORE_CRON_SECRET" http://127.0.0.1:8000/api-v1/cron/checkin-reminders/
 ```
 
 ## 2) Add crontab entries
@@ -56,6 +67,9 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Daily check-in reminders
 0 9 * * * /bin/bash /padlupp/padluppcore/deployment/cron/run_cron_endpoints.sh checkin >> /var/log/padluppcore/cron-checkin.log 2>&1
+
+# Hourly pod cycles, deadline reminders and membership reviews
+0 * * * * /bin/bash /padlupp/padluppcore/deployment/cron/run_cron_endpoints.sh community >> /var/log/padluppcore/cron-community.log 2>&1
 
 # Daily inactivity nudges
 0 9 * * * /bin/bash /padlupp/padluppcore/deployment/cron/run_cron_endpoints.sh nudge >> /var/log/padluppcore/cron-nudge.log 2>&1

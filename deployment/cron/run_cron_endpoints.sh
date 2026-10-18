@@ -18,7 +18,7 @@ CRON_SECRET="${PADLUPPCORE_CRON_SECRET:-}"
 usage() {
   cat <<'EOF'
 Usage:
-  run_cron_endpoints.sh [all|nudge|checkin]
+  run_cron_endpoints.sh [all|nudge|checkin|community]
 
 Environment:
   PADLUPPCORE_CRON_BASE_URL          Base URL (default: http://127.0.0.1:8000/api-v1)
@@ -75,12 +75,17 @@ main() {
     all)
       post_json "/cron/nudge-inactive-users/"
       post_json "/cron/checkin-reminders/"
+      post_json "/cron/community-cycles/"
       ;;
     nudge)
       post_json "/cron/nudge-inactive-users/"
       ;;
     checkin)
       post_json "/cron/checkin-reminders/"
+      post_json "/cron/community-cycles/"
+      ;;
+    community)
+      post_json "/cron/community-cycles/"
       ;;
     *)
       log "Unknown mode: ${mode}"

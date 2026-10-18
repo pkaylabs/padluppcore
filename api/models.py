@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from padluppcore.utils.constants import StatusEnum
 from padluppcore.utils.models import TimeStampedModel
+from .message_models import protected_evidence_path, protected_message_path, protected_storage
 
 
 def build_goal_invite_link(shared_id, goal_id: int = None) -> str:
@@ -92,9 +93,17 @@ class Goal(TimeStampedModel):
 
 
 class GoalMembership(TimeStampedModel):
+	ROLE_MEMBER = 'member'
+	ROLE_ADMIN = 'admin'
+	ROLE_CHOICES = [
+		(ROLE_MEMBER, 'Member'),
+		(ROLE_ADMIN, 'Admin'),
+	]
+
 	goal = models.ForeignKey(Goal, on_delete=models.CASCADE, related_name='goal_memberships')
 	user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='goal_memberships')
 	added_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, related_name='added_goal_memberships', null=True, blank=True)
+	role = models.CharField(max_length=16, choices=ROLE_CHOICES, default=ROLE_MEMBER)
 
 	class Meta:
 		constraints = [
@@ -401,7 +410,15 @@ class GoalCheckin(TimeStampedModel):
 	)
 	update_text = models.TextField(blank=True)
 	blocker = models.TextField(blank=True)
-	evidence = models.FileField(upload_to='checkin_evidence/', null=True, blank=True)
+	mood = models.CharField(max_length=64, blank=True, default='')
+	next_focus = models.TextField(blank=True, default='')
+	review_status = models.CharField(max_length=20, choices=[('pending', 'Pending'), ('confirmed', 'Confirmed'), ('clarification', 'Clarification needed')], default='pending')
+	reviewer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='checkin_reviews')
+	reviewed_at = models.DateTimeField(null=True, blank=True)
+	evidence_deleted_at = models.DateTimeField(null=True, blank=True)
+	evidence_deleted_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='checkin_evidence_deletions')
+	evidence_deletion_reason = models.TextField(blank=True, default='')
+	evidence = models.FileField(upload_to=protected_evidence_path, storage=protected_storage, null=True, blank=True)
 	evidence_view_once = models.BooleanField(default=False)
 	evidence_expires_at = models.DateTimeField(null=True, blank=True)
 	submitted_at = models.DateTimeField(null=True, blank=True)
@@ -501,12 +518,15 @@ class Message(TimeStampedModel):
 	text = models.TextField(blank=True, default='')
 	reply_to_message = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='reply_messages')
 	is_a_reply = models.BooleanField(default=False)
-	attachment = models.FileField(upload_to='chat_attachments/', null=True, blank=True)
+	attachment = models.FileField(upload_to=protected_message_path, storage=protected_storage, null=True, blank=True)
 	attachment_name = models.CharField(max_length=255, blank=True, default='')
 	attachment_mime = models.CharField(max_length=100, blank=True, default='')
 	attachment_size = models.PositiveIntegerField(null=True, blank=True)
 	is_read = models.BooleanField(default=False)
 	recalled_at = models.DateTimeField(null=True, blank=True)
+	deletion_kind = models.CharField(max_length=16, choices=[('', 'Not deleted'), ('sender', 'Sender deletion'), ('moderator', 'Moderation')], blank=True, default='')
+	deleted_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='messages_deleted')
+	deletion_reason = models.TextField(blank=True, default='')
 	kind = models.CharField(max_length=20, choices=KIND_CHOICES, default=KIND_USER)
 	metadata = models.JSONField(default=dict, blank=True)
 
@@ -610,3 +630,17 @@ class Waitlister(TimeStampedModel):
 	age = models.IntegerField(null=True, blank=True)
 	sex = models.CharField(max_length=10, blank=True)
 	country = models.CharField(max_length=100, blank=True)
+
+
+from .message_models import (  # noqa: E402,F401
+	MessageHidden, MessagePin, MessagePoll, MessagePollOption, MessagePollVote,
+	MessageReaction, RetainedMessageAttachment, RetainedMessageEvidence,
+)
+
+
+from .community_models import (  # noqa: E402,F401
+    CommunityAudit, CommunityCategory, CommunityCreatorApproval, CommunityGroup,
+    CommunityInactivityReview, CommunityInvite, CommunityMembership,
+    CommunityMembershipPeriod, CommunityReport, CommunityTask,
+    CommunityTaskInvitation, CommunityTaskMembership, CommunityTaskPeriod,
+)

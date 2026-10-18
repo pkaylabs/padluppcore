@@ -259,6 +259,8 @@ STATICFILES_DIRS = [path for path in (BASE_DIR / 'static',) if path.exists()]
 
 MEDIA_URL = '/assets/'
 MEDIA_ROOT = Path(os.getenv('MEDIA_ROOT', BASE_DIR / 'assets'))
+# Authenticated message attachments and check-in evidence must not be publicly served.
+PRIVATE_MEDIA_ROOT = Path(os.getenv('PRIVATE_MEDIA_ROOT', BASE_DIR.parent / 'padlupp-private-media'))
 
 MESSAGE_RECALL_WINDOW_MINUTES = int(os.getenv('MESSAGE_RECALL_WINDOW_MINUTES', '15'))
 CHECKIN_EVIDENCE_RETENTION_DAYS = int(os.getenv('CHECKIN_EVIDENCE_RETENTION_DAYS', '30'))

@@ -98,6 +98,14 @@ def send_notification_push(notification_id: int) -> None:
 	close_old_connections()
 	try:
 		notification = Notification.objects.select_related('user').get(id=notification_id)
+		from .community_messaging import notification_payload
+		from .signals import _notification_preference_enabled
+		if not _notification_preference_enabled(notification.user, notification.type):
+			return
+		safe_payload = notification_payload(notification, notification.user, delivery=True)
+		if safe_payload is None:
+			return
+		notification.payload = safe_payload
 		tokens = list(DevicePushToken.objects.filter(user=notification.user, is_active=True))
 		if not tokens:
 			return

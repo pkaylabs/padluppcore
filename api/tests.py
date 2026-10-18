@@ -24,6 +24,7 @@ from padluppcore.utils.email import EmailSendError
 from asgiref.sync import async_to_sync
 from api.consumers import ChatConsumer
 from api.push import send_notification_push
+from api.signals import _file_url
 from api.viewsets import AuthViewSet
 
 
@@ -1346,7 +1347,7 @@ class AvatarAbsoluteUrlTests(APITestCase):
 
 	def test_scope_request_builds_absolute_uri(self):
 		scope = {
-			'scheme': 'https',
+			'scheme': 'wss',
 			'headers': [(b'host', b'example.com')],
 		}
 		req = _ScopeRequest(scope)
@@ -1364,10 +1365,21 @@ class AvatarAbsoluteUrlTests(APITestCase):
 				conv = Conversation.objects.create(partnership=partnership)
 				msg = Message.objects.create(conversation=conv, sender=sender, text='hi')
 
-				scope = {'scheme': 'https', 'headers': [(b'host', b'ws.example.com')]}
+				scope = {
+					'scheme': 'wss',
+					'headers': [(b'host', b'ws.example.com')],
+					'user': sender,
+				}
 				req = _ScopeRequest(scope)
 				payload = MessageSerializer(msg, context={'request': req}).data
 				self.assertTrue(payload['sender']['avatar'].startswith('https://ws.example.com/'))
+				self.assertTrue(payload['can_recall'])
+
+	def test_signal_avatar_url_uses_public_base_url(self):
+		with tempfile.TemporaryDirectory() as tmpdir:
+			with override_settings(MEDIA_ROOT=tmpdir, PUBLIC_BASE_URL='https://api.padlupp.com'):
+				user = self._mk_user_with_avatar(email='signal-avatar@test.com')
+				self.assertTrue(_file_url(user.avatar).startswith('https://api.padlupp.com/assets/avatars/'))
 
 
 class ConversationEndpointsTests(APITestCase):
@@ -2018,6 +2030,54 @@ class V3FeatureTests(APITestCase):
 		)
 		self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+	def test_owner_can_promote_member_and_admin_can_remove_ordinary_member(self):
+		self.client.force_authenticate(user=self.owner)
+		promote = self.client.patch(
+			reverse('goals-set-member-role', kwargs={'pk': self.goal.id, 'user_id': self.member.id}),
+			data={'role': GoalMembership.ROLE_ADMIN},
+			format='json',
+		)
+		self.assertEqual(promote.status_code, status.HTTP_200_OK)
+		self.assertTrue(promote.data['is_admin'])
+
+		extra = User.objects.create(email='v3-extra@test.com', name='V3 Extra')
+		GoalMembership.objects.create(goal=self.goal, user=extra, added_by=self.owner)
+		self.client.force_authenticate(user=self.member)
+		remove = self.client.delete(
+			reverse('goals-remove-member', kwargs={'pk': self.goal.id, 'user_id': extra.id}),
+		)
+		self.assertEqual(remove.status_code, status.HTTP_200_OK)
+		self.assertFalse(GoalMembership.objects.filter(goal=self.goal, user=extra).exists())
+
+	def test_member_can_leave_pod_but_owner_cannot(self):
+		self.client.force_authenticate(user=self.member)
+		leave = self.client.post(
+			reverse('goals-leave', kwargs={'pk': self.goal.id}),
+			data={'reason': 'goals_achieved', 'details': 'Done'},
+			format='json',
+		)
+		self.assertEqual(leave.status_code, status.HTTP_200_OK)
+		self.assertFalse(GoalMembership.objects.filter(goal=self.goal, user=self.member).exists())
+		self.assertFalse(ConversationMembership.objects.filter(conversation=self.conversation, user=self.member).exists())
+
+		self.client.force_authenticate(user=self.owner)
+		owner_leave = self.client.post(
+			reverse('goals-leave', kwargs={'pk': self.goal.id}),
+			data={'reason': 'other'},
+			format='json',
+		)
+		self.assertEqual(owner_leave.status_code, status.HTTP_400_BAD_REQUEST)
+
+	def test_member_can_report_pod(self):
+		self.client.force_authenticate(user=self.member)
+		response = self.client.post(
+			reverse('goals-report', kwargs={'pk': self.goal.id}),
+			data={'reason': ContentReport.REASON_SPAM, 'details': 'Repeated promotions'},
+			format='json',
+		)
+		self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+		self.assertTrue(ContentReport.objects.filter(reporter=self.member, conversation=self.conversation).exists())
+
 	def test_public_preview_requires_exact_share_id(self):
 		self.client.force_authenticate(user=None)
 		url = reverse('goals-public-preview', kwargs={'pk': self.goal.id})
@@ -2055,7 +2115,7 @@ class V3FeatureTests(APITestCase):
 		response = self.client.post(url)
 		self.assertEqual(response.status_code, status.HTTP_200_OK)
 		self.assertTrue(response.data['is_recalled'])
-		self.assertEqual(response.data['text'], '')
+		self.assertEqual(response.data['text'], 'This message was deleted')
 		self.assertNotIn('email', response.data['sender'])
 
 	def test_system_messages_cannot_be_recalled(self):
@@ -2121,7 +2181,7 @@ class V3FeatureTests(APITestCase):
 		first = self.client.get(url)
 		self.assertEqual(first.status_code, status.HTTP_200_OK)
 		first.close()
-		self.assertEqual(self.client.get(url).status_code, status.HTTP_410_GONE)
+		self.assertEqual(self.client.get(url).status_code, status.HTTP_200_OK)
 
 	def test_checkin_history_cannot_be_deleted(self):
 		checkin = GoalCheckin.objects.create(

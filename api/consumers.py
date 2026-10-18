@@ -25,7 +25,7 @@ from .presence import (
     presence_cache_key,
     set_global_presence,
 )
-from .serializers import MessageSerializer, PublicUserSerializer
+from .serializers import GoalMemberSerializer, MessageSerializer, PublicUserSerializer
 
 
 class _ScopeRequest:
@@ -36,6 +36,7 @@ class _ScopeRequest:
 
     def __init__(self, scope: dict):
         self._scope = scope or {}
+        self.user = self._scope.get('user')
 
     def build_absolute_uri(self, location: str) -> str:
         if not location:
@@ -44,6 +45,8 @@ class _ScopeRequest:
             return location
 
         scheme = self._scope.get('scheme') or 'http'
+        # Websocket scopes use ws/wss, but media URLs must use HTTP schemes.
+        scheme = {'ws': 'http', 'wss': 'https'}.get(scheme, scheme)
         headers = {k.decode().lower(): v.decode() for k, v in (self._scope.get('headers') or [])}
         host = headers.get('host')
         if not host:
@@ -99,10 +102,23 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
         return
 
     async def conversations_update(self, event):
-        payload = event.get('payload')
-        if not payload:
+        payload = event.get('payload') or {}
+        conversation_id = event.get('conversation_id') or payload.get('id')
+        if not conversation_id:
             return
-        await self.send_json({'type': 'conversation_update', 'conversation': payload})
+        payload = await self.authorized_conversation_payload(conversation_id)
+        if payload:
+            await self.send_json({'type': 'conversation_update', 'conversation': payload})
+
+    @database_sync_to_async
+    def authorized_conversation_payload(self, conversation_id):
+        from .community_messaging import can_receive_updates
+        from .serializers import ConversationSerializer
+        user = User.objects.get(pk=self.user.pk)
+        conversation = Conversation.objects.filter(pk=conversation_id).select_related('goal', 'partnership').first()
+        if not conversation or not can_receive_updates(conversation, user):
+            return None
+        return ConversationSerializer(conversation, context={'request': _ScopeRequest({**self.scope, 'user': user})}).data
 
     async def send_json(self, payload: dict):
         try:
@@ -115,6 +131,9 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
         # Import locally to avoid circular imports at module load.
         from django.db.models import Exists, OuterRef, Q
         from .models import ConversationMembership
+        from .community_access import can_read_conversation, is_internal
+        from .community_messaging import visible_messages
+        user = User.objects.get(pk=user_id)
 
         blocked_user_ids = {
             blocked_id if blocker_id == user_id else blocker_id
@@ -122,10 +141,18 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
                 Q(blocker_id=user_id) | Q(blocked_id=user_id)
             ).values_list('blocker_id', 'blocked_id')
         }
+        access = (
+            Q(members__id=user_id) | Q(partnership__user_a_id=user_id) |
+            Q(partnership__user_b_id=user_id) | Q(goal__user_id=user_id) |
+            Q(goal__members__id=user_id) | Q(community_group__memberships__user_id=user_id) |
+            Q(goal__community_task__memberships__user_id=user_id)
+        )
+        if is_internal(user):
+            access |= Q(community_group__isnull=False) | Q(goal__community_task__isnull=False)
         convs = list(
             Conversation.objects.select_related('partnership', 'partnership__user_a', 'partnership__user_b', 'goal')
             .prefetch_related('members')
-            .filter(Q(members__id=user_id) | Q(partnership__user_a_id=user_id) | Q(partnership__user_b_id=user_id) | Q(goal__members__id=user_id))
+            .filter(access)
             .exclude(Q(partnership__user_a_id__in=blocked_user_ids) | Q(partnership__user_b_id__in=blocked_user_ids))
             .annotate(archived_for_user=Exists(ConversationMembership.objects.filter(
                 conversation_id=OuterRef('pk'), user_id=user_id, archived_at__isnull=False,
@@ -135,13 +162,15 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
             .order_by('-created_at')
         )
         conv_ids = [c.id for c in convs]
+        convs = [conv for conv in convs if can_read_conversation(conv, user)]
+        conv_ids = [c.id for c in convs]
         if not conv_ids:
             return []
 
         # Fetch last message per conversation (best-effort, avoids N+1).
         last_msg_id_by_conv = {}
         for conv_id, msg_id in (
-            Message.objects.filter(conversation_id__in=conv_ids)
+            visible_messages(Message.objects.filter(conversation_id__in=conv_ids), user)
             .exclude(sender_id__in=blocked_user_ids)
             .order_by('conversation_id', '-created_at')
             .values_list('conversation_id', 'id')
@@ -155,6 +184,15 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
         for conv in convs:
             last_msg = last_msgs.get(last_msg_id_by_conv.get(conv.id))
             member_users = list(conv.members.all()) if conv.members.exists() else []
+            serialized_members = (
+                GoalMemberSerializer(
+                    conv.goal.goal_memberships.select_related('user').filter(user__deleted=False),
+                    many=True,
+                    context={'request': self.serializer_request, 'owner_id': conv.goal.user_id},
+                ).data
+                if conv.goal_id
+                else PublicUserSerializer(member_users, many=True, context={'request': self.serializer_request}).data
+            )
             if conv.is_group and conv.goal_id:
                 partner_data = {'name': conv.goal.title, 'avatar': None}
             elif conv.partnership_id:
@@ -171,7 +209,7 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
                 elif conv.goal_id:
                     member_ids = list(conv.goal.members.values_list('id', flat=True))
             unread_count = (
-                Message.objects.filter(conversation_id=conv.id, is_read=False)
+                visible_messages(Message.objects.filter(conversation_id=conv.id, is_read=False), user)
                 .exclude(sender_id=user_id)
                 .exclude(sender_id__in=blocked_user_ids)
                 .count()
@@ -188,6 +226,7 @@ class ConversationsConsumer(AsyncWebsocketConsumer):
                     'name': conv.name,
                     'member_ids': member_ids,
                     'member_names': [u.name for u in member_users],
+                    'members': serialized_members,
                     'last_message': MessageSerializer(last_msg, context={'request': self.serializer_request}).data if last_msg else None,
                     'unread_count': unread_count,
                     'created_at': conv.created_at.isoformat() if conv.created_at else None,
@@ -387,7 +426,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     def _is_allowed_upload_mime(self, mime: str) -> bool:
         mime = (mime or '').strip().lower()
-        return mime.startswith('image/') or mime.startswith('video/')
+        return mime.startswith('image/') or mime.startswith('video/') or mime in {
+            'application/pdf', 'text/plain', 'text/csv', 'application/msword',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            'application/rtf', 'application/vnd.oasis.opendocument.text',
+        }
 
     def _sanitize_filename(self, filename: str, fallback: str = 'upload.bin') -> str:
         name = (filename or '').strip()
@@ -401,6 +446,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def receive(self, text_data=None, bytes_data=None):
         user = self.scope.get('user')
         if not user or not getattr(user, 'is_authenticated', False):
+            return
+
+        if not await self.user_in_conversation(user.id, self.conversation_id):
+            await self.close(code=4403)
             return
 
         # Binary frame upload (requires prior file_meta message).
@@ -440,7 +489,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             except ValueError:
                 await self.send_json({'type': 'error', 'error': 'invalid_reply_target'})
                 return
-            serialized = MessageSerializer(message, context={'request': self.serializer_request}).data
+            serialized = await self.serialize_message(message.pk)
 
             await self.send_json({'type': 'ack', 'ack': 'received', 'message_id': message.id})
             await self.channel_layer.group_send(self.group_name, {'type': 'chat.message', 'message': serialized})
@@ -476,7 +525,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             except ValueError:
                 await self.send_json({'type': 'error', 'error': 'invalid_reply_target'})
                 return
-            serialized = MessageSerializer(message, context={'request': self.serializer_request}).data
+            serialized = await self.serialize_message(message.pk)
 
             # Delivery ack to the sender (message persisted)
             await self.send_json({'type': 'ack', 'ack': 'received', 'message_id': message.id})
@@ -536,7 +585,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             except ValueError:
                 await self.send_json({'type': 'error', 'error': 'invalid_reply_target'})
                 return
-            serialized = MessageSerializer(message, context={'request': self.serializer_request}).data
+            serialized = await self.serialize_message(message.pk)
 
             await self.send_json({'type': 'ack', 'ack': 'received', 'message_id': message.id})
             await self.channel_layer.group_send(self.group_name, {'type': 'chat.message', 'message': serialized})
@@ -564,6 +613,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # Typing indicator
         if msg_type == 'typing':
+            if not await self.can_write_current_conversation():
+                return
             await self.channel_layer.group_send(
                 self.group_name,
                 {
@@ -643,7 +694,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             conv = Conversation.objects.select_related('partnership', 'goal').prefetch_related('members').get(id=conversation_id)
         except Conversation.DoesNotExist:
             return []
-        member_ids = list(conv.members.values_list('id', flat=True))
+        from .community_messaging import can_receive_updates
+        member_ids = [user.id for user in conv.members.all() if can_receive_updates(conv, user)]
         if member_ids:
             return member_ids
         if conv.partnership_id:
@@ -664,6 +716,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
             conv = Conversation.objects.select_related('partnership', 'partnership__user_a', 'partnership__user_b', 'goal').prefetch_related('members').get(id=conversation_id)
         except Conversation.DoesNotExist:
             return None
+        from .community_messaging import can_receive_updates
+        from .community_messaging import visible_messages
+        recipient = User.objects.get(pk=user_id)
+        if not can_receive_updates(conv, recipient):
+            return None
+        request = _ScopeRequest({**self.scope, 'user': recipient})
         blocked_user_ids = self.blocked_user_ids(user_id)
         if conv.partnership_id and (
             conv.partnership.user_a_id in blocked_user_ids
@@ -671,6 +729,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
         ):
             return None
         member_users = list(conv.members.all()) if conv.members.exists() else []
+        serialized_members = (
+            GoalMemberSerializer(
+                conv.goal.goal_memberships.select_related('user').filter(user__deleted=False),
+                many=True,
+                context={'request': self.serializer_request, 'owner_id': conv.goal.user_id},
+            ).data
+            if conv.goal_id
+            else PublicUserSerializer(member_users, many=True, context={'request': self.serializer_request}).data
+        )
         if conv.is_group and conv.goal_id:
             partner_data = {'name': conv.goal.title, 'avatar': None}
         elif conv.partnership_id:
@@ -687,14 +754,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
             elif conv.goal_id:
                 member_ids = list(conv.goal.members.values_list('id', flat=True))
         last_msg = (
-            Message.objects.select_related('sender')
+            visible_messages(Message.objects.select_related('sender'), recipient)
             .filter(conversation_id=conversation_id)
             .exclude(sender_id__in=blocked_user_ids)
             .order_by('-created_at')
             .first()
         )
         unread_count = (
-            Message.objects.filter(conversation_id=conversation_id, is_read=False)
+            visible_messages(Message.objects.filter(conversation_id=conversation_id, is_read=False), recipient)
             .exclude(sender_id=user_id)
             .exclude(sender_id__in=blocked_user_ids)
             .count()
@@ -709,7 +776,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'display_name': partner_data.get('name'),
             'member_ids': member_ids,
             'member_names': [u.name for u in member_users],
-            'last_message': MessageSerializer(last_msg, context={'request': self.serializer_request}).data if last_msg else None,
+            'members': serialized_members,
+            'last_message': MessageSerializer(last_msg, context={'request': request}).data if last_msg else None,
             'unread_count': unread_count,
             'created_at': conv.created_at.isoformat() if conv.created_at else None,
             'updated_at': conv.updated_at.isoformat() if conv.updated_at else None,
@@ -717,17 +785,30 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def chat_message(self, event):
         # Backward-compatible: message payload is sent as the serialized dict.
-        sender_id = ((event.get('message') or {}).get('sender') or {}).get('id')
-        user = self.scope.get('user')
-        if sender_id and user and sender_id != user.id:
-            if await self.users_blocked_each_other(user.id, sender_id):
-                return
-        await self.send(text_data=json.dumps(event['message']))
+        if not await self.user_in_conversation(self.scope['user'].id, self.conversation_id):
+            await self.close(code=4403)
+            return
+        message_id = event.get('message_id') or (event.get('message') or {}).get('id')
+        payload = await self.serialize_message(message_id)
+        if payload:
+            await self.send(text_data=json.dumps(payload))
 
     async def chat_message_updated(self, event):
-        await self.send_json({'type': 'message_updated', 'message': event['message']})
+        if not await self.user_in_conversation(self.scope['user'].id, self.conversation_id):
+            await self.close(code=4403)
+            return
+        message_id = event.get('message_id') or (event.get('message') or {}).get('id')
+        payload = await self.serialize_message(message_id)
+        if payload:
+            await self.send_json({'type': 'message_updated', 'message': payload})
+
+    async def chat_messages_hidden(self, event):
+        if event.get('user_id') == self.scope['user'].pk:
+            await self.send_json({'type': 'messages_hidden', 'ids': event.get('ids', [])})
 
     async def chat_typing(self, event):
+        if not await self.can_write_current_conversation():
+            return
         try:
             await self.send_json(
                 {
@@ -741,24 +822,32 @@ class ChatConsumer(AsyncWebsocketConsumer):
             pass
 
     async def chat_presence(self, event):
+        if not await self.can_write_current_conversation():
+            return
         try:
             await self.send_json({'type': 'presence', 'online_user_ids': event['online_user_ids'], 'online_user_count': event['online_user_count'], 'last_seen_at_by_user_id': event.get('last_seen_at_by_user_id', {})})
         except Exception:
             pass
 
     async def chat_delivered(self, event):
+        if not await self.can_write_current_conversation():
+            return
         try:
             await self.send_json({'type': 'delivered', 'message_id': event['message_id'], 'by_user_id': event['by_user_id']})
         except Exception:
             pass
 
     async def chat_read(self, event):
+        if not await self.can_write_current_conversation():
+            return
         try:
             await self.send_json({'type': 'read', 'message_ids': event['message_ids'], 'by_user_id': event['by_user_id']})
         except Exception:
             pass
 
     async def chat_read_all(self, event):
+        if not await self.can_write_current_conversation():
+            return
         try:
             await self.send_json({'type': 'read_all', 'by_user_id': event['by_user_id']})
         except Exception:
@@ -884,20 +973,26 @@ class ChatConsumer(AsyncWebsocketConsumer):
             conv = Conversation.objects.select_related('partnership__user_a', 'partnership__user_b', 'goal').prefetch_related('members').get(id=conversation_id)
         except Conversation.DoesNotExist:
             return False
-        if conv.members.filter(id=user_id).exists():
-            if conv.partnership_id:
-                other_user_id = conv.partnership.user_b_id if conv.partnership.user_a_id == user_id else conv.partnership.user_a_id
-                if self._users_blocked_each_other(user_id, other_user_id):
-                    return False
-            return True
-        if conv.partnership_id and user_id in [conv.partnership.user_a_id, conv.partnership.user_b_id]:
-            other_user_id = conv.partnership.user_b_id if conv.partnership.user_a_id == user_id else conv.partnership.user_a_id
-            if self._users_blocked_each_other(user_id, other_user_id):
-                return False
-            return True
-        if conv.goal_id and conv.goal.members.filter(id=user_id).exists():
-            return True
-        return False
+        from .community_access import can_read_conversation
+        user = User.objects.filter(pk=user_id).first()
+        if not can_read_conversation(conv, user):
+            return False
+        return not conv.partnership_id or not self._users_blocked_each_other(user_id, conv.partnership.user_b_id if conv.partnership.user_a_id == user_id else conv.partnership.user_a_id)
+
+    @database_sync_to_async
+    def can_write_current_conversation(self):
+        from .community_access import can_write_conversation
+        conversation = Conversation.objects.filter(pk=self.conversation_id).first()
+        user = User.objects.filter(pk=self.scope['user'].pk).first()
+        return bool(conversation and can_write_conversation(conversation, user))
+
+    @database_sync_to_async
+    def serialize_message(self, message_id):
+        from .community_messaging import visible_messages
+        user = User.objects.get(pk=self.scope['user'].pk)
+        message = visible_messages(Message.objects.filter(pk=message_id, conversation_id=self.conversation_id), user).select_related('conversation', 'sender').first()
+        request = _ScopeRequest({**self.scope, 'user': user})
+        return MessageSerializer(message, context={'request': request}).data if message else None
 
     @database_sync_to_async
     def create_message(
@@ -914,13 +1009,25 @@ class ChatConsumer(AsyncWebsocketConsumer):
     ):
         user = User.objects.get(id=user_id)
         conversation = Conversation.objects.select_related('partnership').get(id=conversation_id)
+        from .community_messaging import assert_post_allowed, visible_messages
+        if attachment:
+            attachment.content_type = attachment_mime
+        try:
+            assert_post_allowed(conversation, user, text, attachment)
+        except PermissionError:
+            raise
+        except Exception as exc:
+            from rest_framework.exceptions import PermissionDenied
+            if isinstance(exc, PermissionDenied):
+                raise PermissionError(str(exc)) from exc
+            raise
         if conversation.partnership_id:
             other_user_id = conversation.partnership.user_b_id if conversation.partnership.user_a_id == user_id else conversation.partnership.user_a_id
             if self._users_blocked_each_other(user_id, other_user_id):
                 raise PermissionError('Messaging is unavailable for this conversation.')
         reply_to_message = None
         if reply_to_message_id:
-            reply_to_message = Message.objects.filter(id=reply_to_message_id, conversation_id=conversation_id).first()
+            reply_to_message = visible_messages(Message.objects.filter(id=reply_to_message_id, conversation_id=conversation_id), user).first()
             if not reply_to_message:
                 raise ValueError('Reply target must belong to the same conversation.')
         return Message.objects.create(
@@ -938,8 +1045,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def get_message_history(self, conversation_id, user_id: int, limit: int = 50):
         blocked_user_ids = self.blocked_user_ids(user_id)
+        from .community_messaging import visible_messages
+        user = User.objects.get(pk=user_id)
         qs = (
-            Message.objects.select_related('sender')
+            visible_messages(Message.objects.select_related('sender'), user)
             .filter(conversation_id=conversation_id)
             .exclude(sender_id__in=blocked_user_ids)
             .order_by('-created_at')[:limit]
@@ -967,20 +1076,26 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def message_belongs_to_conversation(self, message_id: int, conversation_id) -> bool:
-        return Message.objects.filter(id=message_id, conversation_id=conversation_id).exists()
+        from .community_messaging import visible_messages
+        user = User.objects.get(pk=self.scope['user'].pk)
+        return visible_messages(Message.objects.filter(id=message_id, conversation_id=conversation_id), user).exists()
 
     @database_sync_to_async
     def mark_messages_read(self, user_id: int, conversation_id, message_ids: list[int]):
+        from .community_messaging import visible_messages
+        user = User.objects.get(pk=user_id)
         return (
-            Message.objects.filter(conversation_id=conversation_id, id__in=message_ids)
+            visible_messages(Message.objects.filter(conversation_id=conversation_id, id__in=message_ids), user)
             .exclude(sender_id=user_id)
             .update(is_read=True, updated_at=timezone.now())
         )
 
     @database_sync_to_async
     def mark_all_messages_read(self, user_id: int, conversation_id):
+        from .community_messaging import visible_messages
+        user = User.objects.get(pk=user_id)
         return (
-            Message.objects.filter(conversation_id=conversation_id, is_read=False)
+            visible_messages(Message.objects.filter(conversation_id=conversation_id, is_read=False), user)
             .exclude(sender_id=user_id)
             .update(is_read=True, updated_at=timezone.now())
         )

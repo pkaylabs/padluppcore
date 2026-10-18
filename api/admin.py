@@ -129,6 +129,21 @@ class MessageAdmin(admin.ModelAdmin):
 	list_display = ('id', 'conversation', 'sender', 'is_a_reply', 'reply_to_message', 'text', 'is_read', 'created_at')
 	search_fields = ('sender__email', 'text')
 	list_filter = ('is_read',)
+	exclude = ('attachment',)
+	readonly_fields = ('protected_attachment',)
+
+	@admin.display(description='Attachment')
+	def protected_attachment(self, obj):
+		return 'Protected file. View through authenticated chat or HQ report review; use audited moderation to remove it.' if obj and obj.attachment else 'No attachment.'
+
+	def has_add_permission(self, request):
+		return False
+
+	def has_change_permission(self, request, obj=None):
+		return False
+
+	def has_delete_permission(self, request, obj=None):
+		return False
 
 
 @admin.register(UserBlock)
@@ -143,6 +158,18 @@ class ContentReportAdmin(admin.ModelAdmin):
 	search_fields = ('reporter__email', 'reported_user__email', 'details', 'moderator_notes')
 	list_filter = ('status', 'reason', 'created_at')
 	readonly_fields = ('reporter', 'reported_user', 'conversation', 'message', 'reason', 'details', 'created_at', 'updated_at')
+
+	def has_delete_permission(self, request, obj=None):
+		return False
+
+	def save_model(self, request, obj, form, change):
+		from django.db import transaction
+		from .community_messaging import set_report_review
+		with transaction.atomic():
+			if not change:
+				super().save_model(request, obj, form, change)
+			set_report_review(obj, request.user, obj.status, obj.moderator_notes)
+			obj.refresh_from_db()
 
 
 @admin.register(Waitlister)
@@ -189,8 +216,9 @@ class CheckinReminderLogAdmin(admin.ModelAdmin):
 
 @admin.register(GoalMembership)
 class GoalMembershipAdmin(admin.ModelAdmin):
-	list_display = ('id', 'goal', 'user', 'added_by', 'created_at')
+	list_display = ('id', 'goal', 'user', 'role', 'added_by', 'created_at')
 	search_fields = ('goal__title', 'user__email', 'user__name')
+	list_filter = ('role',)
 
 
 @admin.register(ConversationMembership)
@@ -210,6 +238,21 @@ class GoalCheckinAdmin(admin.ModelAdmin):
 	list_display = ('id', 'goal', 'user', 'scheduled_for', 'status', 'completion_percent', 'submitted_at')
 	search_fields = ('goal__title', 'user__email', 'user__name')
 	list_filter = ('status', 'scheduled_for', 'evidence_view_once')
+	exclude = ('evidence',)
+	readonly_fields = ('protected_evidence',)
+
+	@admin.display(description='Evidence')
+	def protected_evidence(self, obj):
+		return 'Protected file. View or delete through authenticated, audited HQ evidence controls.' if obj and obj.evidence else 'No evidence.'
+
+	def has_add_permission(self, request):
+		return False
+
+	def has_change_permission(self, request, obj=None):
+		return False
+
+	def has_delete_permission(self, request, obj=None):
+		return False
 
 
 admin.site.register(GoalCheckinReaction)

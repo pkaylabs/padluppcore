@@ -8,6 +8,11 @@ from api.serializers import LogoutResponseSerializer
 
 from .ws_docs import WebSocketDocsView
 from .views import GoalCheckinReminderCronView, InactiveUserNudgeView
+from .community_views import (
+    CommunityGroupViewSet, CommunityHQViewSet, CommunityMaintenanceView, CommunityMemberMessageView,
+    CommunityTaskViewSet, CommunityUsersView,
+)
+from .community_messaging import CommunityMessageViewSet
 
 from .viewsets import (
 	AwardViewSet,
@@ -52,6 +57,10 @@ router.register('messages', MessageViewSet, basename='messages')
 router.register('waitlist', WaitlistViewSet, basename='waitlist')
 router.register('stats', StatsViewSet, basename='stats')
 router.register('awards', AwardViewSet, basename='awards')
+router.register('community/groups', CommunityGroupViewSet, basename='community-group')
+router.register('community/tasks', CommunityTaskViewSet, basename='community-task')
+router.register('community/messages', CommunityMessageViewSet, basename='community-message')
+router.register('community/hq', CommunityHQViewSet, basename='community-hq')
 
 
 
@@ -64,6 +73,10 @@ LogoutViewSchema = extend_schema_view(
 )(knox_views.LogoutView)
 
 urlpatterns = [
+	path('community/users/', CommunityUsersView.as_view(), name='community-users'),
+	path('community/users/<int:user_id>/message/', CommunityMemberMessageView.as_view(), name='community-member-message'),
+	path('community/maintenance/', CommunityMaintenanceView.as_view(), name='community-maintenance'),
+	path('cron/community-cycles/', CommunityMaintenanceView.as_view(), name='cron-community-cycles'),
 	path('schema/', SpectacularAPIView.as_view(), name='schema'),
 	path('docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
 	path('websockets/', WebSocketDocsView.as_view(), name='websocket-docs'),

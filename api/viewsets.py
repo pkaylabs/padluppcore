@@ -5,6 +5,7 @@ from django.db import IntegrityError
 from django.db import models
 from django.db import transaction
 from django.http import FileResponse
+import logging
 import secrets
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -52,6 +53,9 @@ from .serializers import (
 	GoalCheckinSerializer,
 	GoalJoinRequestSerializer,
 	GoalJoinResponseSerializer,
+	GoalLeaveRequestSerializer,
+	GoalMemberRoleRequestSerializer,
+	GoalMemberSerializer,
 	GoalShareRequestSerializer,
 	GoalShareResponseSerializer,
 	PublicGoalPreviewSerializer,
@@ -70,6 +74,7 @@ from .serializers import (
 	AwardsResponseSerializer,
 	ConversationRenameRequestSerializer,
 )
+
 from .serializers import (
 	GoogleAuthRequestSerializer,
 	GoogleAuthResponseSerializer,
@@ -87,6 +92,8 @@ from .serializers import (
 	DevicePushTokenRegisterSerializer,
 	DevicePushTokenUnregisterSerializer,
 )
+
+logger = logging.getLogger(__name__)
 
 
 WAITLIST_BETA_MESSAGE = (
@@ -108,13 +115,8 @@ def _goal_invite_link(shared_id) -> str:
 
 
 def _user_is_member_of_conversation(user_id: int, conversation: Conversation) -> bool:
-	if conversation.members.filter(id=user_id).exists():
-		return True
-	if conversation.partnership_id and user_id in [conversation.partnership.user_a_id, conversation.partnership.user_b_id]:
-		return True
-	if conversation.goal_id and conversation.goal.members.filter(id=user_id).exists():
-		return True
-	return False
+	from .community_access import can_read_conversation
+	return can_read_conversation(conversation, User.objects.filter(pk=user_id).first())
 
 
 def _goal_member_ids(goal: Goal) -> list[int]:
@@ -128,15 +130,33 @@ def _goal_member_ids(goal: Goal) -> list[int]:
 	return ids
 
 
+def _goal_user_can_manage_members(goal: Goal, user_id: int) -> bool:
+	return bool(
+		goal.user_id == user_id
+		or GoalMembership.objects.filter(
+			goal=goal,
+			user_id=user_id,
+			role=GoalMembership.ROLE_ADMIN,
+		).exists()
+	)
+
+
 def _add_goal_member(goal: Goal, user: User, added_by: User | None = None) -> bool:
+	role = GoalMembership.ROLE_ADMIN if user.id == goal.user_id else GoalMembership.ROLE_MEMBER
 	membership, created = GoalMembership.objects.get_or_create(
 		goal=goal,
 		user=user,
-		defaults={'added_by': added_by},
+		defaults={'added_by': added_by, 'role': role},
 	)
+	updated_fields = []
 	if not created and added_by and not membership.added_by_id:
 		membership.added_by = added_by
-		membership.save(update_fields=['added_by', 'updated_at'])
+		updated_fields.append('added_by')
+	if not created and user.id == goal.user_id and membership.role != GoalMembership.ROLE_ADMIN:
+		membership.role = GoalMembership.ROLE_ADMIN
+		updated_fields.append('role')
+	if updated_fields:
+		membership.save(update_fields=[*updated_fields, 'updated_at'])
 	return created
 
 
@@ -1437,16 +1457,25 @@ class GoalViewSet(viewsets.ModelViewSet):
 
 	def get_queryset(self):
 		user = self.request.user
-		# Get goals the user owns, participates in, or has joined as a member.
-		return (
-			Goal.objects.filter(
-			models.Q(user=user) |
-			models.Q(members=user) |
-			models.Q(partnership__user_a=user) |
-			models.Q(partnership__user_b=user)
-			)
-			.distinct()
+		from .community_access import can_access_goal, is_internal
+		access = (
+			models.Q(user=user) | models.Q(members=user) |
+			models.Q(community_task__memberships__user=user) |
+			models.Q(partnership__user_a=user) | models.Q(partnership__user_b=user)
 		)
+		if is_internal(user):
+			access |= models.Q(community_task__isnull=False)
+		queryset = Goal.objects.filter(access).distinct()
+		if self.action == 'list' and self.request.query_params.get('scope') == 'pods':
+			# Count independently of access joins, which may match only this member.
+			multiple_members = GoalMembership.objects.filter(goal_id=models.OuterRef('pk')).values('goal_id').annotate(
+				total=models.Count('pk'),
+			).filter(total__gt=1)
+			queryset = queryset.alias(_has_multiple_pod_members=models.Exists(multiple_members)).filter(
+				models.Q(is_shared=True) | models.Q(community_task__isnull=False) |
+				models.Q(partnership__isnull=False) | models.Q(_has_multiple_pod_members=True)
+			)
+		return queryset.filter(pk__in=[goal.pk for goal in queryset.select_related('community_task') if can_access_goal(goal, user)])
 
 
 	def perform_create(self, serializer):
@@ -1473,6 +1502,8 @@ class GoalViewSet(viewsets.ModelViewSet):
 	def perform_update(self, serializer):
 		# Every active goal member may collaborate on goal details.
 		goal = self.get_object()
+		if getattr(goal, 'community_task', None):
+			raise ValidationError('Use the community task endpoints to update this pod.')
 		user = self.request.user
 		if user.id in _goal_member_ids(goal):
 			requested_visibility = serializer.validated_data.get('is_public', goal.is_public)
@@ -1486,6 +1517,13 @@ class GoalViewSet(viewsets.ModelViewSet):
 			raise PermissionDenied("You do not have permission to update this goal.")
 
 	def perform_destroy(self, instance):
+		if getattr(instance, 'community_task', None):
+			from .community_access import can_manage_task
+			from .community_services import set_task_status
+			if not can_manage_task(instance.community_task, self.request.user):
+				raise PermissionDenied('Only a pod administrator can archive this task.')
+			set_task_status(instance.community_task, self.request.user, 'archived', reason='Task deleted by administrator.')
+			return
 		if instance.user_id != self.request.user.id:
 			raise PermissionDenied('Only the goal owner can delete this goal.')
 		instance.delete()
@@ -1503,6 +1541,8 @@ class GoalViewSet(viewsets.ModelViewSet):
 		goal = Goal.objects.select_related('user').filter(pk=pk, is_public=True, shared_id=shared_id).first()
 		if not goal:
 			return Response({'detail': 'Goal not found or the share link is invalid.'}, status=status.HTTP_404_NOT_FOUND)
+		if getattr(goal, 'community_task', None):
+			return Response({'detail': 'Use the community task invitation.'}, status=status.HTTP_403_FORBIDDEN)
 		return Response(PublicGoalPreviewSerializer(goal, context={'request': request}).data)
 
 	@extend_schema(
@@ -1518,6 +1558,8 @@ class GoalViewSet(viewsets.ModelViewSet):
 		goal = Goal.objects.filter(shared_id=shared_id).select_related('user', 'partnership').first()
 		if not goal:
 			return Response({'detail': 'Goal not found.'}, status=status.HTTP_404_NOT_FOUND)
+		if getattr(goal, 'community_task', None):
+			return Response({'detail': 'Join this task through its community enrollment endpoint.'}, status=status.HTTP_403_FORBIDDEN)
 		if not goal.is_public:
 			return Response({'detail': 'This goal is not public.'}, status=status.HTTP_403_FORBIDDEN)
 
@@ -1581,7 +1623,9 @@ class GoalViewSet(viewsets.ModelViewSet):
 	@action(detail=True, methods=['post'], url_path='share')
 	def share(self, request, pk=None):
 		goal = self.get_object()
-		if goal.user_id != request.user.id:
+		if getattr(goal, 'community_task', None):
+			return Response({'detail': 'Invite participants through the community task invitations endpoint.'}, status=status.HTTP_403_FORBIDDEN)
+		if not _goal_user_can_manage_members(goal, request.user.id):
 			return Response({'detail': 'You do not have permission to share this goal.'}, status=status.HTTP_403_FORBIDDEN)
 
 		serializer = GoalShareRequestSerializer(data=request.data)
@@ -1675,22 +1719,83 @@ class GoalViewSet(viewsets.ModelViewSet):
 		)
 
 	@extend_schema(
-		responses={200: PublicUserSerializer(many=True), 403: DetailResponseSerializer, 404: DetailResponseSerializer},
-		description='Return the list of all members in this goal. Only goal members can access this endpoint.',
+		responses={200: GoalMemberSerializer(many=True), 403: DetailResponseSerializer, 404: DetailResponseSerializer},
+		description='Return goal members to authorized participants and internal community administrators.',
 	)
 	@action(detail=True, methods=['get'], url_path='members')
 	def members(self, request, pk=None):
 		goal = self.get_object()
-		allowed_ids = set(_goal_member_ids(goal))
-		if request.user.id not in allowed_ids:
+		from .community_access import can_access_goal
+		if not can_access_goal(goal, request.user):
 			return Response({'detail': 'You are not a member of this goal.'}, status=status.HTTP_403_FORBIDDEN)
 
-		# Preserve stable ordering (owner/partners first if present in _goal_member_ids).
-		ordered_ids = _goal_member_ids(goal)
-		users = list(User.objects.filter(id__in=ordered_ids, deleted=False))
-		user_by_id = {u.id: u for u in users}
-		ordered_users = [user_by_id[uid] for uid in ordered_ids if uid in user_by_id]
-		return Response(PublicUserSerializer(ordered_users, many=True, context={'request': request}).data, status=status.HTTP_200_OK)
+		memberships = list(goal.goal_memberships.select_related('user').filter(user__deleted=False))
+		memberships.sort(key=lambda membership: (membership.user_id != goal.user_id, membership.created_at))
+		return Response(
+			GoalMemberSerializer(
+				memberships,
+				many=True,
+				context={'request': request, 'owner_id': goal.user_id},
+			).data,
+			status=status.HTTP_200_OK,
+		)
+
+	@extend_schema(
+		request=GoalMemberRoleRequestSerializer,
+		responses={200: GoalMemberSerializer, 400: DetailResponseSerializer, 403: DetailResponseSerializer, 404: DetailResponseSerializer},
+		description='Promote or demote a Paddie Pod member. Only the goal owner can manage admin roles.',
+	)
+	@action(detail=True, methods=['patch'], url_path=r'members/(?P<user_id>\d+)/role')
+	def set_member_role(self, request, pk=None, user_id=None):
+		goal = self.get_object()
+		if getattr(goal, 'community_task', None):
+			from .community_access import can_manage_task, can_write_goal
+			from .community_models import CommunityTaskMembership
+			from .community_messaging import audit
+			if not can_manage_task(goal.community_task, request.user) or not can_write_goal(goal, request.user):
+				raise PermissionDenied('Only an active pod administrator can manage roles.')
+			role = request.data.get('role')
+			if role not in {'admin', 'member'} or int(user_id) == goal.user_id:
+				raise ValidationError('The owner remains an admin; use admin or member for other participants.')
+			with transaction.atomic():
+				membership = CommunityTaskMembership.objects.select_for_update().filter(task=goal.community_task, user_id=user_id, state='active').first()
+				if not membership:
+					raise ValidationError('Select an active pod member.')
+				membership.role = role
+				membership.save(update_fields=['role', 'updated_at'])
+				GoalMembership.objects.filter(goal=goal, user_id=user_id).update(role=role)
+				audit(request.user, 'pod_role_changed', membership, 'Pod administrator changed a member role.', metadata={'role': role})
+			return Response(GoalMemberSerializer(GoalMembership.objects.get(goal=goal, user_id=user_id), context={'request': request, 'owner_id': goal.user_id}).data)
+		if goal.user_id != request.user.id:
+			return Response({'detail': 'Only the goal owner can manage admin roles.'}, status=status.HTTP_403_FORBIDDEN)
+
+		serializer = GoalMemberRoleRequestSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		try:
+			member_id = int(user_id)
+		except (TypeError, ValueError):
+			return Response({'detail': 'Invalid user_id.'}, status=status.HTTP_400_BAD_REQUEST)
+		if member_id == goal.user_id:
+			return Response({'detail': 'The goal owner is always an admin.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		membership = goal.goal_memberships.select_related('user').filter(user_id=member_id).first()
+		if not membership:
+			return Response({'detail': 'User is not a member of this goal.'}, status=status.HTTP_404_NOT_FOUND)
+
+		membership.role = serializer.validated_data['role']
+		membership.save(update_fields=['role', 'updated_at'])
+		conversation = Conversation.objects.filter(goal=goal).first()
+		if conversation:
+			from .signals import _broadcast_conversation_state
+			transaction.on_commit(lambda: _broadcast_conversation_state(conversation.id))
+
+		return Response(
+			GoalMemberSerializer(
+				membership,
+				context={'request': request, 'owner_id': goal.user_id},
+			).data,
+			status=status.HTTP_200_OK,
+		)
 
 	@extend_schema(
 		parameters=[
@@ -1708,8 +1813,18 @@ class GoalViewSet(viewsets.ModelViewSet):
 	@action(detail=True, methods=['delete'], url_path=r'members/(?P<user_id>\d+)')
 	def remove_member(self, request, pk=None, user_id=None):
 		goal = self.get_object()
-		if goal.user_id != request.user.id:
-			return Response({'detail': 'Only the goal owner can remove members.'}, status=status.HTTP_403_FORBIDDEN)
+		if getattr(goal, 'community_task', None):
+			from .community_services import leave_task
+			from .community_access import can_write_goal
+			if not can_write_goal(goal, request.user):
+				raise PermissionDenied('This pod is read-only.')
+			member = User.objects.filter(pk=user_id).first()
+			if not member:
+				raise ValidationError('Member not found.')
+			leave_task(goal.community_task, request.user, request.data.get('reason', ''), transfer_to=request.data.get('transfer_to'), remove_user=member)
+			return Response({'detail': 'Member removed.'})
+		if not _goal_user_can_manage_members(goal, request.user.id):
+			return Response({'detail': 'Only the goal owner or an admin can remove members.'}, status=status.HTTP_403_FORBIDDEN)
 
 		try:
 			member_id = int(user_id)
@@ -1718,6 +1833,13 @@ class GoalViewSet(viewsets.ModelViewSet):
 
 		if member_id == goal.user_id:
 			return Response({'detail': 'The goal owner cannot be removed.'}, status=status.HTTP_400_BAD_REQUEST)
+		target_membership = GoalMembership.objects.filter(goal=goal, user_id=member_id).first()
+		if (
+			goal.user_id != request.user.id
+			and target_membership
+			and target_membership.role == GoalMembership.ROLE_ADMIN
+		):
+			return Response({'detail': 'Only the goal owner can remove another admin.'}, status=status.HTTP_403_FORBIDDEN)
 		if goal.partnership_id and member_id in [getattr(goal.partnership, 'user_a_id', None), getattr(goal.partnership, 'user_b_id', None)]:
 			return Response({'detail': 'Partnership members cannot be removed from a partnership goal.'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -1731,6 +1853,67 @@ class GoalViewSet(viewsets.ModelViewSet):
 				ConversationMembership.objects.filter(conversation=conversation, user_id=member_id).delete()
 
 		return Response({'detail': 'Member removed.'}, status=status.HTTP_200_OK)
+
+	@extend_schema(
+		request=GoalLeaveRequestSerializer,
+		responses={200: DetailResponseSerializer, 400: DetailResponseSerializer},
+		description='Leave a Paddie Pod and remove access to its group conversation.',
+	)
+	@action(detail=True, methods=['post'], url_path='leave')
+	def leave(self, request, pk=None):
+		goal = self.get_object()
+		if getattr(goal, 'community_task', None):
+			from .community_services import leave_task
+			leave_task(goal.community_task, request.user, request.data.get('reason', ''), transfer_to=request.data.get('transfer_to'))
+			return Response({'detail': 'You have left the pod.'})
+		if goal.user_id == request.user.id:
+			return Response({'detail': 'The pod creator cannot leave their own pod.'}, status=status.HTTP_400_BAD_REQUEST)
+		if goal.partnership_id and request.user.id in [goal.partnership.user_a_id, goal.partnership.user_b_id]:
+			return Response({'detail': 'Partnership members cannot leave a partnership goal.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		serializer = GoalLeaveRequestSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		membership = GoalMembership.objects.filter(goal=goal, user=request.user).first()
+		if not membership:
+			return Response({'detail': 'You are not a member of this pod.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		with transaction.atomic():
+			membership.delete()
+			conversation = Conversation.objects.filter(goal=goal).first()
+			if conversation:
+				ConversationMembership.objects.filter(conversation=conversation, user=request.user).delete()
+
+		logger.info(
+			'User %s left goal %s. reason=%s details=%s',
+			request.user.id,
+			goal.id,
+			serializer.validated_data['reason'],
+			serializer.validated_data.get('details', ''),
+		)
+		return Response({'detail': 'You have left the pod.'}, status=status.HTTP_200_OK)
+
+	@extend_schema(
+		request=ContentReportRequestSerializer,
+		responses={201: DetailResponseSerializer, 400: DetailResponseSerializer},
+		description='Report a Paddie Pod for moderation review.',
+	)
+	@action(detail=True, methods=['post'], url_path='report')
+	def report(self, request, pk=None):
+		goal = self.get_object()
+		if goal.user_id == request.user.id:
+			return Response({'detail': 'You cannot report your own pod.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		serializer = ContentReportRequestSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		details = serializer.validated_data.get('details', '')
+		ContentReport.objects.create(
+			reporter=request.user,
+			reported_user=goal.user,
+			conversation=Conversation.objects.filter(goal=goal).first(),
+			reason=serializer.validated_data['reason'],
+			details=f'[Pod #{goal.id}: {goal.title}] {details}'.strip(),
+		)
+		return Response({'detail': 'Pod report submitted.'}, status=status.HTTP_201_CREATED)
 
 
 class PartnershipViewSet(viewsets.ReadOnlyModelViewSet):
@@ -1832,13 +2015,44 @@ class MatchViewSet(viewsets.ModelViewSet):
 		return match
 
 
-class TaskViewSet(viewsets.ModelViewSet):
+class CommunityWorkBoundaryMixin:
+	"""Legacy work-item routes must not bypass their community pod policy."""
+
+	def _community_goal(self, obj):
+		if isinstance(obj, Task):
+			return obj.goal
+		if getattr(obj, 'task_id', None):
+			return obj.task.goal
+		if getattr(obj, 'subtask_id', None):
+			return obj.subtask.task.goal
+		return None
+
+	def filter_queryset(self, queryset):
+		from .community_access import can_access_goal
+		queryset = super().filter_queryset(queryset)
+		allowed = []
+		for obj in queryset:
+			goal = self._community_goal(obj)
+			if not goal or not getattr(goal, 'community_task', None) or can_access_goal(goal, self.request.user):
+				allowed.append(obj.pk)
+		return queryset.filter(pk__in=allowed)
+
+	def get_object(self):
+		from .community_access import can_write_goal
+		obj = super().get_object()
+		goal = self._community_goal(obj)
+		if self.request.method not in {'GET', 'HEAD', 'OPTIONS'} and goal and getattr(goal, 'community_task', None) and not can_write_goal(goal, self.request.user):
+			raise PermissionDenied('This pod is read-only.')
+		return obj
+
+
+class TaskViewSet(CommunityWorkBoundaryMixin, viewsets.ModelViewSet):
 	serializer_class = TaskSerializer
 	permission_classes = [permissions.IsAuthenticated]
 
 	def get_queryset(self):
 		user = self.request.user
-		return (
+		queryset = (
 			Task.objects.filter(
 				models.Q(owner=user)
 				| models.Q(partnership__user_a=user)
@@ -1851,6 +2065,10 @@ class TaskViewSet(viewsets.ModelViewSet):
 			.distinct()
 			.order_by('-created_at')
 		)
+		goal_id = self.request.query_params.get('goal')
+		if goal_id:
+			queryset = queryset.filter(goal_id=goal_id)
+		return queryset
 
 	def _assert_task_owner(self, task: Task):
 		if task.owner_id != self.request.user.id:
@@ -2037,7 +2255,7 @@ class TaskViewSet(viewsets.ModelViewSet):
 		return Response(TaskSerializer(task).data)
 
 
-class SubTaskViewSet(viewsets.ModelViewSet):
+class SubTaskViewSet(CommunityWorkBoundaryMixin, viewsets.ModelViewSet):
 	serializer_class = SubTaskSerializer
 	permission_classes = [permissions.IsAuthenticated]
 
@@ -2051,7 +2269,7 @@ class SubTaskViewSet(viewsets.ModelViewSet):
 		serializer.save(owner=self.request.user)
 
 
-class TimerSessionViewSet(viewsets.ReadOnlyModelViewSet):
+class TimerSessionViewSet(CommunityWorkBoundaryMixin, viewsets.ReadOnlyModelViewSet):
 	serializer_class = TimerSessionSerializer
 	permission_classes = [permissions.IsAuthenticated]
 
@@ -2059,7 +2277,7 @@ class TimerSessionViewSet(viewsets.ReadOnlyModelViewSet):
 		return TimerSession.objects.filter(user=self.request.user).order_by('-created_at')
 
 
-class EvidenceViewSet(viewsets.ModelViewSet):
+class EvidenceViewSet(CommunityWorkBoundaryMixin, viewsets.ModelViewSet):
 	serializer_class = EvidenceSerializer
 	permission_classes = [permissions.IsAuthenticated]
 
@@ -2094,14 +2312,18 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
 		user = self.request.user
 		if not getattr(user, 'is_authenticated', False):
 			return Conversation.objects.none()
+		from .community_access import can_read_conversation, is_internal
 		blocked_user_ids = _blocked_user_ids(user)
+		access = (
+			models.Q(members=user) | models.Q(partnership__user_a=user) |
+			models.Q(partnership__user_b=user) | models.Q(goal__user=user) |
+			models.Q(goal__members=user) | models.Q(community_group__memberships__user=user) |
+			models.Q(goal__community_task__memberships__user=user)
+		)
+		if is_internal(user):
+			access |= models.Q(community_group__isnull=False) | models.Q(goal__community_task__isnull=False)
 		queryset = (
-			Conversation.objects.filter(
-				models.Q(members=user) |
-				models.Q(partnership__user_a=user) |
-				models.Q(partnership__user_b=user) |
-				models.Q(goal__members=user)
-			)
+			Conversation.objects.filter(access)
 			.distinct()
 			.annotate(
 			archived_for_user=models.Exists(
@@ -2125,7 +2347,7 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
 			queryset = queryset.filter(archived_for_user=True)
 		elif self.action != 'restore':
 			queryset = queryset.filter(archived_for_user=False)
-		return queryset.distinct().order_by('-updated_at')
+		return queryset.filter(pk__in=[conv.pk for conv in queryset if can_read_conversation(conv, user)]).distinct().order_by('-updated_at')
 
 	@action(detail=False, methods=['get'], url_path='archived')
 	def archived(self, request):
@@ -2165,7 +2387,30 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
 			.exclude(models.Q(attachment__isnull=True) | models.Q(attachment=''))
 			.order_by('-created_at')
 		)
+		from .community_messaging import visible_messages
+		qs = visible_messages(qs.filter(recalled_at__isnull=True), request.user, resources=True)
 		return Response(ConversationMediaSerializer(qs, many=True, context={'request': request}).data)
+
+	@action(detail=True, methods=['get'], url_path='resources')
+	def resources(self, request, pk=None):
+		from .community_messaging import visible_messages
+		conversation = self.get_object()
+		resource_type = request.query_params.get('type', 'media')
+		qs = visible_messages(conversation.messages.select_related('sender', 'conversation', 'reply_to_message__sender'), request.user, resources=True).filter(recalled_at__isnull=True)
+		if resource_type == 'media':
+			qs = qs.exclude(attachment='').filter(models.Q(attachment_mime__startswith='image/') | models.Q(attachment_mime__startswith='video/'))
+		elif resource_type == 'files':
+			qs = qs.exclude(models.Q(attachment='') | models.Q(attachment__isnull=True)).exclude(models.Q(attachment_mime__startswith='image/') | models.Q(attachment_mime__startswith='video/'))
+		elif resource_type == 'links':
+			qs = qs.filter(models.Q(text__contains='https://') | models.Q(text__contains='http://'))
+		elif resource_type == 'pins':
+			qs = qs.filter(pin__isnull=False)
+		else:
+			raise ValidationError({'type': 'Use media, files, links or pins.'})
+		qs = qs.order_by('-created_at', '-id')
+		page = self.paginate_queryset(qs)
+		data = MessageSerializer(page if page is not None else qs, many=True, context={'request': request, 'resources': True}).data
+		return self.get_paginated_response(data) if page is not None else Response(data)
 
 	@extend_schema(
 		request=ConversationRenameRequestSerializer,
@@ -2175,6 +2420,11 @@ class ConversationViewSet(viewsets.ReadOnlyModelViewSet):
 	@action(detail=True, methods=['post'], url_path='rename-group')
 	def rename_group(self, request, pk=None):
 		conversation = self.get_object()
+		from .community_access import can_manage_group, can_manage_task, can_write_conversation
+		group = getattr(conversation, 'community_group', None)
+		task = getattr(conversation.goal, 'community_task', None) if conversation.goal_id else None
+		if not can_write_conversation(conversation, request.user) or (group and not can_manage_group(group, request.user)) or (task and not can_manage_task(task, request.user)):
+			raise PermissionDenied('You cannot rename this conversation.')
 		if not conversation.is_group:
 			return Response({'detail': 'Only group conversations can be renamed.'}, status=status.HTTP_400_BAD_REQUEST)
 		if not _user_is_member_of_conversation(request.user.id, conversation):
@@ -2200,12 +2450,7 @@ class MessageViewSet(
 		user = self.request.user
 		blocked_user_ids = _blocked_user_ids(user)
 		qs = (
-			Message.objects.filter(
-				models.Q(conversation__members=user) |
-				models.Q(conversation__partnership__user_a=user) |
-				models.Q(conversation__partnership__user_b=user) |
-				models.Q(conversation__goal__members=user)
-			)
+			Message.objects.all()
 			.exclude(sender_id__in=blocked_user_ids)
 			.exclude(
 				models.Q(conversation__partnership__user_a_id__in=blocked_user_ids)
@@ -2217,11 +2462,14 @@ class MessageViewSet(
 		conversation_id = self.request.query_params.get('conversation')
 		if conversation_id:
 			qs = qs.filter(conversation_id=conversation_id)
-		return qs
+		from .community_messaging import visible_messages
+		return visible_messages(qs, user)
 
 	def perform_create(self, serializer):
 		conversation = serializer.validated_data['conversation']
 		user = self.request.user
+		from .community_messaging import assert_post_allowed, broadcast_message
+		assert_post_allowed(conversation, user, serializer.validated_data.get('text', ''), serializer.validated_data.get('attachment'), serializer.validated_data.get('poll'))
 		# Ensure user belongs to the conversation's partnership
 		if not _user_is_member_of_conversation(user.id, conversation):
 			raise PermissionDenied('You are not part of this conversation.')
@@ -2231,6 +2479,7 @@ class MessageViewSet(
 			if other_user_id and _users_blocked_each_other(user.id, other_user_id):
 				raise PermissionDenied('Messaging is unavailable for this conversation.')
 		message = serializer.save(sender=user)
+		broadcast_message(message.pk, conversation.pk, created=True)
 		self._broadcast_conversation_update(conversation_id=conversation.id)
 		return message
 
@@ -2248,6 +2497,10 @@ class MessageViewSet(
 				user_ids = list(conv.goal.members.values_list('id', flat=True))
 		member_names = [u.name for u in conv.members.all()] if conv.members.exists() else []
 		for uid in user_ids:
+			from .community_messaging import can_receive_updates
+			recipient = User.objects.get(pk=uid)
+			if not can_receive_updates(conv, recipient):
+				continue
 			if ConversationMembership.objects.filter(
 				conversation_id=conversation_id,
 				user_id=uid,
@@ -2267,9 +2520,11 @@ class MessageViewSet(
 				.order_by('-created_at')
 				.first()
 			)
+			from .community_messaging import visible_messages
+			last_msg = visible_messages(Message.objects.filter(conversation_id=conversation_id), recipient).order_by('-created_at', '-id').first()
 			last_message_payload = MessageSerializer(
 				last_msg,
-				context={'request': getattr(self, 'request', None)},
+				context={'request': type('RecipientRequest', (), {'user': recipient, 'build_absolute_uri': self.request.build_absolute_uri})()},
 			).data if last_msg else None
 			unread_count = (
 				Message.objects.filter(conversation_id=conversation_id, is_read=False)
@@ -2277,6 +2532,7 @@ class MessageViewSet(
 				.exclude(sender_id__in=blocked_user_ids)
 				.count()
 			)
+			unread_count = visible_messages(Message.objects.filter(conversation_id=conversation_id, is_read=False).exclude(sender=recipient), recipient).count()
 			payload = {
 				'id': conv.id,
 				'partnership': conv.partnership_id,
@@ -2286,6 +2542,7 @@ class MessageViewSet(
 				'name': conv.name,
 				'member_ids': user_ids,
 				'member_names': member_names,
+				'members': ConversationSerializer(conv, context={'request': self.request}).data.get('members', []),
 				'last_message': last_message_payload,
 				'unread_count': unread_count,
 				'created_at': conv.created_at.isoformat() if conv.created_at else None,
@@ -2328,33 +2585,24 @@ class MessageViewSet(
 			return Response({'detail': 'System messages cannot be recalled.'}, status=status.HTTP_400_BAD_REQUEST)
 		if message.recalled_at:
 			return Response(MessageSerializer(message, context={'request': request}).data)
-		window = int(getattr(settings, 'MESSAGE_RECALL_WINDOW_MINUTES', 15))
-		if message.created_at < timezone.now() - timedelta(minutes=window):
+		from .community_messaging import can_sender_delete, delete_selection
+		if not can_sender_delete(message, request.user):
 			return Response(
-				{'detail': f'Messages can only be recalled within {window} minutes.'},
+				{'detail': 'Messages can only be recalled within 15 minutes while you can post.'},
 				status=status.HTTP_400_BAD_REQUEST,
 			)
-		if message.attachment:
-			message.attachment.delete(save=False)
-		message.text = ''
-		message.attachment = None
-		message.attachment_name = ''
-		message.attachment_mime = ''
-		message.attachment_size = None
-		message.recalled_at = timezone.now()
-		message.save(update_fields=[
-			'text', 'attachment', 'attachment_name', 'attachment_mime',
-			'attachment_size', 'recalled_at', 'updated_at',
-		])
+		delete_selection(request.user, [message.pk], 'everyone')
+		message.refresh_from_db()
 		payload = MessageSerializer(message, context={'request': request}).data
-		channel_layer = get_channel_layer()
-		if channel_layer:
-			async_to_sync(channel_layer.group_send)(
-				f'chat_{message.conversation_id}',
-				{'type': 'chat.message.updated', 'message': payload},
-			)
 		self._broadcast_conversation_update(conversation_id=message.conversation_id)
 		return Response(payload)
+
+	@action(detail=False, methods=['post'], url_path='delete-selection')
+	def delete_selection(self, request):
+		from .community_messaging import delete_selection
+		ids, scope = request.data.get('ids'), request.data.get('scope')
+		delete_selection(request.user, ids, scope, request.data.get('reason', ''))
+		return Response({'ids': ids, 'scope': scope})
 
 	@extend_schema(
 		request=ContentReportRequestSerializer,
@@ -2389,6 +2637,13 @@ class GoalCheckinViewSet(viewsets.ModelViewSet):
 	def get_queryset(self):
 		user = self.request.user
 		today = dt_to_local_date(timezone.now(), get_user_tzinfo(user))
+		from .community_access import can_access_goal, is_internal
+		goal_id = self.request.query_params.get('goal')
+		if goal_id:
+			goal = Goal.objects.filter(pk=goal_id).first()
+			if goal and can_access_goal(goal, user) and getattr(goal, 'community_task', None):
+				from .community_services import generate_task_cycles
+				generate_task_cycles(goal.community_task)
 		GoalCheckin.objects.filter(
 			status=GoalCheckin.STATUS_PENDING,
 			scheduled_for__lt=today,
@@ -2401,31 +2656,51 @@ class GoalCheckinViewSet(viewsets.ModelViewSet):
 				| models.Q(goal__members=user)
 				| models.Q(goal__partnership__user_a=user)
 				| models.Q(goal__partnership__user_b=user)
+				| models.Q(goal__community_task__memberships__user=user)
 			)
 			.distinct()
 		)
-		goal_id = self.request.query_params.get('goal')
+		if is_internal(user):
+			queryset = GoalCheckin.objects.select_related('goal', 'user', 'reviewer').prefetch_related('reactions__user')
 		if goal_id:
 			queryset = queryset.filter(goal_id=goal_id)
-		return queryset
+		return queryset.filter(pk__in=[row.pk for row in queryset if self._can_read_checkin(row)])
+
+	def _can_read_checkin(self, checkin):
+		from .community_access import can_access_goal, is_internal, task_membership
+		user = self.request.user
+		if not can_access_goal(checkin.goal, user):
+			return False
+		task = getattr(checkin.goal, 'community_task', None)
+		if not task or is_internal(user):
+			return True
+		membership = task_membership(task, user)
+		if not membership:
+			return False
+		content_at = checkin.submitted_at or checkin.created_at
+		return any(not period.ended_at or content_at <= period.ended_at for period in membership.periods.all())
 
 	def _assert_goal_member(self, goal):
-		if self.request.user.id not in _goal_member_ids(goal):
-			raise PermissionDenied('You are not a member of this goal.')
+		from .community_access import can_write_goal, task_membership
+		task = getattr(goal, 'community_task', None)
+		membership = task_membership(task, self.request.user) if task else None
+		if not can_write_goal(goal, self.request.user) or (task and not (membership and membership.state == 'active')):
+			raise PermissionDenied('Only an active member of an active pod can submit a check-in.')
 
 	def _save_submission(self, serializer):
-		retention_days = int(getattr(settings, 'CHECKIN_EVIDENCE_RETENTION_DAYS', 30))
 		checkin = serializer.save(
 			user=self.request.user,
 			submitted_at=timezone.now(),
-			evidence_expires_at=timezone.now() + timedelta(days=retention_days),
+			evidence_expires_at=None,
+			evidence_view_once=False,
+			review_status='pending', reviewer=None, reviewed_at=None,
 		)
 		self._award_badge_if_earned(checkin)
 		return checkin
 
 	def _create_checkin_message(self, checkin):
 		conversation = _ensure_goal_conversation(checkin.goal, self.request.user)
-		Message.objects.create(
+		message = Message.objects.create(
 			conversation=conversation,
 			sender=self.request.user,
 			kind=Message.KIND_CHECKIN,
@@ -2437,37 +2712,59 @@ class GoalCheckinViewSet(viewsets.ModelViewSet):
 				'completion_percent': checkin.completion_percent,
 				'blocker': checkin.blocker,
 				'has_evidence': bool(checkin.evidence),
+				'mood': checkin.mood, 'review_status': checkin.review_status,
 			},
 		)
+		from .community_messaging import broadcast_message, notify_checkin_event
+		transaction.on_commit(lambda: broadcast_message(message.pk, conversation.pk, created=True))
+		notify_checkin_event(checkin, self.request.user)
 
 	def create(self, request, *args, **kwargs):
 		serializer = self.get_serializer(data=request.data)
 		serializer.is_valid(raise_exception=True)
 		goal = serializer.validated_data['goal']
 		self._assert_goal_member(goal)
-		existing = GoalCheckin.objects.filter(
+		with transaction.atomic():
+			Goal.objects.select_for_update().get(pk=goal.pk)
+			goal.refresh_from_db()
+			self._assert_goal_member(goal)
+			existing = GoalCheckin.objects.select_for_update().filter(
 			goal=goal,
 			user=request.user,
 			scheduled_for=serializer.validated_data['scheduled_for'],
-		).first()
-		if existing and existing.status not in {GoalCheckin.STATUS_PENDING, GoalCheckin.STATUS_MISSED}:
-			return Response({'detail': 'A check-in has already been submitted for this date.'}, status=status.HTTP_409_CONFLICT)
-		if existing:
-			serializer = self.get_serializer(existing, data=request.data, partial=True)
-			serializer.is_valid(raise_exception=True)
-		checkin = self._save_submission(serializer)
-		self._create_checkin_message(checkin)
+			).first()
+			if getattr(goal, 'community_task', None) and not existing:
+				raise ValidationError({'scheduled_for': 'Submit an existing system-scheduled check-in cycle.'})
+			if existing and existing.status not in {GoalCheckin.STATUS_PENDING, GoalCheckin.STATUS_MISSED}:
+				return Response({'detail': 'A check-in has already been submitted for this date.'}, status=status.HTTP_409_CONFLICT)
+			if existing:
+				serializer = self.get_serializer(existing, data=request.data, partial=True)
+				serializer.is_valid(raise_exception=True)
+			checkin = self._save_submission(serializer)
+			self._create_checkin_message(checkin)
 		return Response(self.get_serializer(checkin).data, status=status.HTTP_200_OK if existing else status.HTTP_201_CREATED)
+
+	@transaction.atomic
+	def update(self, request, *args, **kwargs):
+		checkin = self.get_object()
+		GoalCheckin.objects.select_for_update().get(pk=checkin.pk)
+		return super().update(request, *args, **kwargs)
 
 	def perform_update(self, serializer):
 		if serializer.instance.user_id != self.request.user.id:
 			raise PermissionDenied('Only the check-in author can update it.')
 		goal = serializer.validated_data.get('goal', serializer.instance.goal)
 		self._assert_goal_member(goal)
+		if getattr(goal, 'community_task', None) and serializer.instance.status not in {GoalCheckin.STATUS_PENDING, GoalCheckin.STATUS_MISSED}:
+			raise ValidationError('This cycle has already been submitted.')
 		self._save_submission(serializer)
+		self._create_checkin_message(serializer.instance)
 
 	def _award_badge_if_earned(self, checkin):
 		member_ids = set(_goal_member_ids(checkin.goal))
+		task = getattr(checkin.goal, 'community_task', None)
+		if task:
+			member_ids = set(task.memberships.filter(state='active', user__is_active=True, user__deleted=False).values_list('user_id', flat=True))
 		if not member_ids:
 			return
 		on_time_ids = set(
@@ -2488,6 +2785,7 @@ class GoalCheckinViewSet(viewsets.ModelViewSet):
 	@action(detail=True, methods=['post'], url_path='react')
 	def react(self, request, pk=None):
 		checkin = self.get_object()
+		self._assert_goal_member(checkin.goal)
 		serializer = GoalCheckinReactionRequestSerializer(data=request.data)
 		serializer.is_valid(raise_exception=True)
 		reaction, _ = GoalCheckinReaction.objects.update_or_create(
@@ -2498,23 +2796,78 @@ class GoalCheckinViewSet(viewsets.ModelViewSet):
 		checkin._prefetched_objects_cache = {}
 		return Response(self.get_serializer(checkin).data)
 
+	@action(detail=True, methods=['post'], url_path='review')
+	@transaction.atomic
+	def review(self, request, pk=None):
+		checkin = self.get_object()
+		checkin = GoalCheckin.objects.select_for_update().get(pk=checkin.pk)
+		self._assert_goal_member(checkin.goal)
+		if checkin.user_id == request.user.pk:
+			raise PermissionDenied('You cannot review your own check-in.')
+		if not checkin.submitted_at:
+			raise ValidationError('Only a submitted check-in can be reviewed.')
+		from .community_messaging import can_review_checkin
+		if not can_review_checkin(checkin, request.user):
+			raise PermissionDenied('Only an active member of an active pod can review another member\'s check-in.')
+		approved = request.data.get('approved')
+		if type(approved) is not bool:
+			raise ValidationError({'approved': 'Supply a boolean.'})
+		checkin.review_status = 'confirmed' if approved else 'clarification'
+		checkin.reviewer = request.user
+		checkin.reviewed_at = timezone.now()
+		checkin.save(update_fields=['review_status', 'reviewer', 'reviewed_at', 'updated_at'])
+		from .community_messaging import audit, broadcast_message
+		for message in Message.objects.filter(kind=Message.KIND_CHECKIN, metadata__checkin_id=checkin.pk):
+			message.metadata.update(review_status=checkin.review_status, reviewer_id=request.user.pk)
+			message.save(update_fields=['metadata', 'updated_at'])
+			transaction.on_commit(lambda mid=message.pk, cid=message.conversation_id: broadcast_message(mid, cid))
+		audit(request.user, 'checkin_reviewed', checkin, 'Peer confirmation.' if approved else 'Peer requested clarification.')
+		from .community_messaging import notify_checkin_event
+		notify_checkin_event(checkin, request.user, reviewed=True)
+		return Response(self.get_serializer(checkin).data)
+
+	@action(detail=True, methods=['post'], url_path='delete-evidence')
+	@transaction.atomic
+	def delete_evidence(self, request, pk=None):
+		from .community_messaging import audit
+		from .community_access import is_internal
+		if not is_internal(request.user):
+			raise PermissionDenied('Only authorized internal administrators may delete evidence.')
+		reason = str(request.data.get('reason', '')).strip()
+		if not reason:
+			raise ValidationError({'reason': 'A deletion reason is required.'})
+		checkin = self.get_object()
+		checkin = GoalCheckin.objects.select_for_update().get(pk=checkin.pk)
+		if checkin.evidence:
+			storage, name = checkin.evidence.storage, checkin.evidence.name
+			transaction.on_commit(lambda: storage.delete(name))
+		checkin.evidence = None
+		checkin.evidence_deleted_at = timezone.now()
+		checkin.evidence_deleted_by = request.user
+		checkin.evidence_deletion_reason = reason
+		checkin.save()
+		from .community_messaging import broadcast_message
+		for message in Message.objects.filter(kind=Message.KIND_CHECKIN, metadata__checkin_id=checkin.pk):
+			message.metadata['has_evidence'] = False
+			message.save(update_fields=['metadata', 'updated_at'])
+			transaction.on_commit(lambda mid=message.pk, cid=message.conversation_id: broadcast_message(mid, cid))
+		audit(request.user, 'checkin_evidence_deleted', checkin, reason)
+		return Response(self.get_serializer(checkin).data)
+
 	@action(detail=True, methods=['get'], url_path='evidence')
 	def evidence(self, request, pk=None):
 		checkin = self.get_object()
+		from .community_access import is_internal, task_membership
+		task = getattr(checkin.goal, 'community_task', None)
+		membership = task_membership(task, request.user) if task else None
+		if task and not is_internal(request.user) and not (membership and membership.state == 'active'):
+			raise PermissionDenied('Evidence is available to active pod members only.')
 		if not checkin.evidence:
 			return Response({'detail': 'No evidence is attached.'}, status=status.HTTP_404_NOT_FOUND)
-		if checkin.evidence_expires_at and checkin.evidence_expires_at <= timezone.now():
-			return Response({'detail': 'This evidence has expired.'}, status=status.HTTP_410_GONE)
-		if checkin.evidence_view_once and checkin.user_id != request.user.id:
-			_, created = GoalCheckinEvidenceView.objects.get_or_create(checkin=checkin, user=request.user)
-			if not created:
-				return Response({'detail': 'This view-once evidence has already been opened.'}, status=status.HTTP_410_GONE)
-		filename = checkin.evidence.name.rsplit('/', 1)[-1]
-		response = FileResponse(checkin.evidence.open('rb'), as_attachment=False, filename=filename)
-		response['Cache-Control'] = 'private, no-store, max-age=0'
-		response['Pragma'] = 'no-cache'
-		response['X-Content-Type-Options'] = 'nosniff'
-		return response
+		from .community_messaging import PREVIEW_CONTENT_TYPES, protected_response, safe_file_mime, safe_file_name
+		filename = safe_file_name(checkin.evidence.name)
+		mime = safe_file_mime(filename)
+		return protected_response(checkin.evidence, filename, mime, as_attachment=mime not in PREVIEW_CONTENT_TYPES)
 
 
 class DevicePushTokenViewSet(viewsets.GenericViewSet):
@@ -2568,7 +2921,10 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
 	permission_classes = [permissions.IsAuthenticated]
 
 	def get_queryset(self):
-		return Notification.objects.filter(user=self.request.user).order_by('-created_at')
+		from .community_messaging import notification_payload
+		queryset = Notification.objects.filter(user=self.request.user).select_related('user').order_by('-created_at')
+		allowed_ids = [notification.pk for notification in queryset if notification_payload(notification, self.request.user) is not None]
+		return queryset.filter(pk__in=allowed_ids)
 
 	@extend_schema(
 		responses={200: NotificationMarkAllReadResponseSerializer},
@@ -2589,7 +2945,7 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
 		notification = self.get_object()
 		notification.is_read = True
 		notification.save(update_fields=['is_read'])
-		return Response(NotificationSerializer(notification).data)
+		return Response(NotificationSerializer(notification, context={'request': request}).data)
 
 
 class WaitlistViewSet(viewsets.ModelViewSet):

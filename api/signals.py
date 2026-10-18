@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from urllib.parse import urljoin
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -18,7 +19,7 @@ from .awards import evaluate_user_awards
 from .models import Conversation, ConversationMembership, Evidence, Goal, GoalMembership, Message, Notification, Task, TimerSession, UserBlock, UserDailyActivity
 from .presence import get_globally_online_user_ids, get_online_user_ids
 from .push import enqueue_notification_push
-from .serializers import MessageSerializer
+from .serializers import GoalMemberSerializer, MessageSerializer, PublicUserSerializer
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +28,17 @@ def _file_url(field_file):
     if not field_file or not getattr(field_file, 'name', ''):
         return None
     try:
-        return field_file.url
+        url = field_file.url
     except (AttributeError, ValueError):
         return None
+    if not url:
+        return None
+    if url.startswith(('http://', 'https://')):
+        return url
+    base_url = getattr(settings, 'PUBLIC_BASE_URL', '') or getattr(settings, 'SITE_URL', '')
+    if not base_url:
+        return url
+    return urljoin(base_url.rstrip('/') + '/', url.lstrip('/'))
 
 
 def _conversation_participant_ids(conversation: Conversation) -> list[int]:
@@ -57,6 +66,11 @@ def _notification_preference_enabled(user, notification_type: str) -> bool:
         'new_message': 'notify_on_new_message',
         'new_match': 'notify_on_new_match',
         'checkin_reminder': 'notify_on_reminders',
+        'community_checkin_submitted': 'notify_on_reminders',
+        'community_checkin_reviewed': 'notify_on_reminders',
+        'community_checkin_due': 'notify_on_reminders',
+        'community_checkin_reminder': 'notify_on_reminders',
+        'community_checkin_missed': 'notify_on_reminders',
         'subtask_reminder': 'notify_on_reminders',
         'new_task': 'notify_on_reminders',
         'review_requested': 'notify_on_reminders',
@@ -83,13 +97,29 @@ def _broadcast_conversation_state(conversation_id: int):
             return
 
         conv = Conversation.objects.select_related('partnership', 'goal').prefetch_related('members').get(id=conversation_id)
+        from .community_messaging import can_receive_updates, visible_messages
+        from .consumers import _ScopeRequest
         user_ids = _conversation_participant_ids(conv)
+        recipients = {user.id: user for user in User.objects.filter(id__in=user_ids, is_active=True, deleted=False)
+                      if can_receive_updates(conv, user)}
+        user_ids = list(recipients)
         if not user_ids:
             return
 
-        member_names = [u.name for u in conv.members.all()]
+        member_users = list(conv.members.all())
+        member_names = [u.name for u in member_users]
+        serialized_members = (
+            GoalMemberSerializer(
+                conv.goal.goal_memberships.select_related('user').filter(user__deleted=False),
+                many=True,
+                context={'owner_id': conv.goal.user_id},
+            ).data
+            if conv.goal_id
+            else PublicUserSerializer(member_users, many=True).data
+        )
 
         for uid in user_ids:
+            recipient = recipients[uid]
             if ConversationMembership.objects.filter(
                 conversation_id=conv.id,
                 user_id=uid,
@@ -114,15 +144,15 @@ def _broadcast_conversation_state(conversation_id: int):
                 partner_name = conv.goal.title if conv.goal_id else ', '.join(member_names)
 
             last_msg = (
-                Message.objects.select_related('sender')
+                visible_messages(Message.objects.select_related('sender'), recipient)
                 .filter(conversation_id=conv.id)
                 .exclude(sender_id__in=blocked_user_ids)
                 .order_by('-created_at')
                 .first()
             )
-            last_message_payload = MessageSerializer(last_msg, context={}).data if last_msg else None
+            last_message_payload = MessageSerializer(last_msg, context={'request': _ScopeRequest({'user': recipient})}).data if last_msg else None
             unread_count = (
-                Message.objects.filter(conversation_id=conv.id, is_read=False)
+                visible_messages(Message.objects.filter(conversation_id=conv.id, is_read=False), recipient)
                 .exclude(sender_id=uid)
                 .exclude(sender_id__in=blocked_user_ids)
                 .count()
@@ -137,6 +167,7 @@ def _broadcast_conversation_state(conversation_id: int):
                 'display_name': partner_name,
                 'member_ids': user_ids,
                 'member_names': member_names,
+                'members': serialized_members,
                 'last_message': last_message_payload,
                 'unread_count': unread_count,
                 'created_at': conv.created_at.isoformat() if conv.created_at else None,
@@ -193,6 +224,9 @@ def notify_new_message(sender, instance: Message, created: bool, **kwargs):
     if not conversation:
         return
 
+    if instance.kind == Message.KIND_CHECKIN and conversation.goal_id and getattr(conversation.goal, 'community_task', None):
+        return
+
     recipient_ids = [
         user_id
         for user_id in _conversation_participant_ids(conversation)
@@ -220,6 +254,9 @@ def notify_new_message(sender, instance: Message, created: bool, **kwargs):
         preview = f'{preview[:157]}...'
 
     for recipient in recipients:
+        from .community_messaging import chat_notification_allowed
+        if not chat_notification_allowed(instance, recipient):
+            continue
         Notification.objects.create(
             user=recipient,
             type='new_message',
@@ -267,7 +304,14 @@ def sync_goal_members(sender, instance: Goal, created: bool, **kwargs):
         if goal.partnership.user_b_id:
             member_users[goal.partnership.user_b_id] = goal.partnership.user_b
     for member in member_users.values():
-        GoalMembership.objects.get_or_create(goal=goal, user=member, defaults={'added_by': goal.user})
+        GoalMembership.objects.get_or_create(
+            goal=goal,
+            user=member,
+            defaults={
+                'added_by': goal.user,
+                'role': GoalMembership.ROLE_ADMIN if member.id == goal.user_id else GoalMembership.ROLE_MEMBER,
+            },
+        )
     if goal.partnership_id and not goal.is_shared:
         Goal.objects.filter(id=goal.id, is_shared=False).update(is_shared=True)
 
@@ -392,6 +436,9 @@ def _notification_email_content(notification: Notification) -> tuple[str, str]:
     ntype = (notification.type or '').strip()
     payload = notification.payload or {}
 
+    if ntype.startswith('community_'):
+        return payload.get('title') or 'Padlupp community update', payload.get('message') or 'There is an update for you on Padlupp.'
+
     if ntype == 'new_match':
         subject = 'You have a new match'
         text = 'You have a new match on Padlupp. Open the app to view details.'
@@ -475,10 +522,22 @@ def email_notification_created(sender, instance: Notification, created: bool, **
 
     def _send_after_commit():
         try:
+            from .community_messaging import notification_payload
+            current = Notification.objects.select_related('user').filter(pk=instance.pk).first()
+            if not current or not _notification_preference_enabled(current.user, current.type):
+                return
+            safe_payload = notification_payload(current, current.user, delivery=True)
+            if safe_payload is None:
+                return
+            current.payload = safe_payload
+            current_subject, current_text = _notification_email_content(current)
+            current_email = current.user.preferred_notification_email or current.user.email
+            if not current_email:
+                return
             send_mailgun_email(
-                to_email=to_email,
-                subject=subject,
-                text=text,
+                to_email=current_email,
+                subject=current_subject,
+                text=current_text,
                 tags=['notification', instance.type or 'unknown'],
             )
         except EmailSendError:
@@ -496,4 +555,10 @@ def push_notification_created(sender, instance: Notification, created: bool, **k
     user = getattr(instance, 'user', None)
     if not user or not _notification_preference_enabled(user, instance.type):
         return
-    transaction.on_commit(lambda notification_id=instance.id: enqueue_notification_push(notification_id))
+    def _enqueue_after_commit():
+        from .community_messaging import notification_payload
+        current = Notification.objects.select_related('user').filter(pk=instance.pk).first()
+        if current and _notification_preference_enabled(current.user, current.type) and notification_payload(current, current.user, delivery=True) is not None:
+            enqueue_notification_push(current.pk)
+
+    transaction.on_commit(_enqueue_after_commit)

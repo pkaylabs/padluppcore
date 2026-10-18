@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, timezone as datetime_timezone
 from uuid import UUID
 
 from django.db import transaction
@@ -9,7 +10,7 @@ from django.utils import timezone
 
 from padluppcore.utils.constants import StatusEnum
 
-from .models import Goal, GoalMembership, Notification, ReferralInvite, UserAward
+from .models import Goal, GoalCheckin, GoalMembership, Notification, ReferralInvite, UserAward
 from .streaks import get_streak_stats
 
 
@@ -88,6 +89,14 @@ AWARD_DEFINITIONS = (
         description='Work on a goal with at least one other member.',
         target=1,
     ),
+    AwardDefinition(
+        key='consistent_checkins',
+        category_key='team_player',
+        category_title='Team Player',
+        title='Consistent check-ins',
+        description='Submit every check-in during a pod. Honest updates count, including partial or blocked progress.',
+        target=1,
+    ),
 )
 
 AWARD_BY_KEY = {definition.key: definition for definition in AWARD_DEFINITIONS}
@@ -127,7 +136,24 @@ def award_progress_for_user(user) -> dict[str, int]:
         'streak_14': longest_streak,
         'successful_referral': successful_referrals,
         'team_player': collaborative_goals,
+        # This award is granted only by the audited pod-closure evaluation.
+        'consistent_checkins': int(UserAward.objects.filter(user=user, award_key='consistent_checkins').exists()),
     }
+
+
+def _grant_award(user, definition, progress, *, notify=True):
+    award, created = UserAward.objects.get_or_create(
+        user=user, award_key=definition.key, defaults={'progress_snapshot': progress},
+    )
+    if not created:
+        return None
+    if notify and getattr(user, 'notify_on_milestones', True):
+        Notification.objects.create(
+            user=user, type='milestone_unlocked',
+            payload={'award_key': definition.key, 'title': 'Milestone unlocked',
+                     'message': f'You earned the {definition.title} award.', 'path': '/milestones'},
+        )
+    return award
 
 
 def evaluate_user_awards(user, *, notify: bool = True) -> list[UserAward]:
@@ -141,27 +167,67 @@ def evaluate_user_awards(user, *, notify: bool = True) -> list[UserAward]:
         if current < definition.target:
             continue
 
-        award, created = UserAward.objects.get_or_create(
-            user=user,
-            award_key=definition.key,
-            defaults={'progress_snapshot': current},
-        )
-        if not created:
-            continue
-
-        newly_unlocked.append(award)
-        if notify and getattr(user, 'notify_on_milestones', True):
-            Notification.objects.create(
-                user=user,
-                type='milestone_unlocked',
-                payload={
-                    'award_key': definition.key,
-                    'title': 'Milestone unlocked',
-                    'message': f'You earned the {definition.title} award.',
-                    'path': '/milestones',
-                },
-            )
+        award = _grant_award(user, definition, current, notify=notify)
+        if award:
+            newly_unlocked.append(award)
     return newly_unlocked
+
+
+@transaction.atomic
+def award_closed_pod_checkins(task, actor, *, closure_status, closed_at=None):
+    """Reward honest participation, not progress, timeliness or peer approval."""
+    if closure_status not in ('completed', 'archived', 'deleted') or task.status not in ('completed', 'archived'):
+        return []
+    from .community_services import audit, task_due_dates
+    closed_at = closed_at or timezone.now()
+    today = closed_at.astimezone(datetime_timezone.utc).date()
+    rows = list(task.goal.checkins.filter(scheduled_for__lte=today))
+    # Lifecycle snapshots preserve owed dates across pauses and cadence edits;
+    # issued rows preserve history, including delayed scheduler runs.
+    due_dates = {row.scheduled_for for row in rows}
+    schedule_snapshots = [entry.outcome['checkin_due_dates'] for entry in task.audit.all()
+                          if entry.action != 'task.active' and entry.outcome.get('previous_status') == 'active'
+                          and 'checkin_due_dates' in entry.outcome]
+    if schedule_snapshots:
+        for snapshot in schedule_snapshots:
+            for value in snapshot:
+                due = date.fromisoformat(value)
+                if due <= today:
+                    due_dates.add(due)
+    else:
+        due_dates.update(task_due_dates(task, until=today))
+    rows_by_user = {}
+    for row in rows:
+        rows_by_user.setdefault(row.user_id, {})[row.scheduled_for] = row
+    granted, evaluated = [], []
+    members = task.memberships.filter(state__in=['active', 'left'], user__is_active=True, user__deleted=False).select_related('user').prefetch_related('periods')
+    for member in members:
+        periods = []
+        for period in member.periods.all():
+            end = period.ended_at or (member.left_at if member.state == 'left' else None) or closed_at
+            end = min(end, closed_at)
+            if period.joined_at <= end:
+                periods.append((period.joined_at, end))
+        expected = {due for due in due_dates if any(
+            start.astimezone(datetime_timezone.utc).date() <= due <= end.astimezone(datetime_timezone.utc).date()
+            for start, end in periods)}
+        submissions = rows_by_user.get(member.user_id, {})
+        evaluated.append(member.user_id)
+        if not expected or not expected.issubset(submissions):
+            continue
+        if not all(submissions[due].status in ('completed', 'partial', 'blocked')
+                   and submissions[due].submitted_at is not None
+                   and any(start <= submissions[due].submitted_at <= end for start, end in periods)
+                   for due in expected):
+            continue
+        award = _grant_award(member.user, AWARD_BY_KEY['consistent_checkins'], len(expected))
+        if award:
+            granted.append(award)
+    audit(actor, 'task.checkin_awards_evaluated', task, metadata={
+        'closure_status': closure_status, 'award_key': 'consistent_checkins',
+        'evaluated_user_ids': evaluated, 'awarded_user_ids': [award.user_id for award in granted],
+    })
+    return granted
 
 
 def claim_referral(referral_token, user) -> bool:

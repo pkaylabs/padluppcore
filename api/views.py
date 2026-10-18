@@ -225,16 +225,12 @@ class GoalCheckinReminderCronView(APIView):
 	def post(self, request):
 		now = timezone.now()
 		expired_evidence_purged = 0
-		for checkin in GoalCheckin.objects.filter(
-			evidence_expires_at__lte=now,
-		).exclude(Q(evidence__isnull=True) | Q(evidence='')).iterator():
-			checkin.evidence.delete(save=False)
-			checkin.evidence = None
-			checkin.save(update_fields=['evidence', 'updated_at'])
-			expired_evidence_purged += 1
+		# Evidence remains in authorized completed/archived history. Only an
+		# explicit internal-admin moderation action may remove it.
 
 		goals = (
 			Goal.objects.filter(is_active=True)
+			.filter(community_task__isnull=True)
 			.select_related('user', 'partnership', 'partnership__user_a', 'partnership__user_b')
 			.prefetch_related('members')
 			.order_by('id')
@@ -295,7 +291,7 @@ class GoalCheckinReminderCronView(APIView):
 				)
 
 		for subtask in (
-			Task.objects.select_related('owner', 'goal')
+			Task.objects.select_related('owner', 'goal').filter(Q(goal__community_task__isnull=True) | Q(goal__is_active=True))
 			.exclude(status=Task.STATUS_COMPLETED)
 			.filter(due_at__isnull=False)
 			.iterator()
