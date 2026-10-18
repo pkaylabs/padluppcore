@@ -52,16 +52,30 @@ post_json() {
     headers=(-H "X-Padlupp-Cron-Secret: ${CRON_SECRET}")
   fi
 
-  "${CURL_BIN}" \
+  # Match the trusted local proxy's HTTPS scheme without following redirects.
+  case "${BASE_URL}" in
+    http://127.0.0.1:*|http://localhost:*)
+      headers+=(-H 'X-Forwarded-Proto: https')
+      ;;
+  esac
+
+  local response status
+  response=$("${CURL_BIN}" \
     --silent --show-error \
     "${curl_fail_flag}" \
     --max-time "${TIMEOUT_SECONDS}" \
     -X POST \
     -H 'Content-Type: application/json' \
     "${headers[@]}" \
-    "${url}"
+    --write-out $'\n%{http_code}' \
+    "${url}")
 
-  echo
+  status="${response##*$'\n'}"
+  printf '%s\n' "${response%$'\n'*}"
+  if [[ ! "${status}" =~ ^2[0-9][0-9]$ ]]; then
+    log "Unexpected HTTP status ${status}; scheduler request was not completed."
+    return 1
+  fi
 }
 
 main() {

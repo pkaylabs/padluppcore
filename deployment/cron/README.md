@@ -21,6 +21,9 @@ On the server, the simplest/most reliable approach is to call Daphne directly ov
 
 - `http://127.0.0.1:8000/api-v1/...`
 
+The runner sends the trusted local HTTPS proxy header for loopback requests and
+requires a 2xx response. A redirect is an error, not a successful scheduler run.
+
 ## 1) Quick manual test (on the server)
 
 From the repo root:
