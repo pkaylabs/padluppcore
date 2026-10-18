@@ -23,6 +23,8 @@ On the server, the simplest/most reliable approach is to call Daphne directly ov
 
 The runner sends the trusted local HTTPS proxy header for loopback requests and
 requires a 2xx response. A redirect is an error, not a successful scheduler run.
+Existing secret files using Django's `CRON_SHARED_SECRET` name are also supported;
+`PADLUPPCORE_CRON_SECRET` takes precedence when both are present.
 
 ## 1) Quick manual test (on the server)
 

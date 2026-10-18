@@ -13,7 +13,7 @@ if [[ -r "${ENV_FILE}" ]]; then
   source "${ENV_FILE}"
 fi
 
-CRON_SECRET="${PADLUPPCORE_CRON_SECRET:-}"
+CRON_SECRET="${PADLUPPCORE_CRON_SECRET:-${CRON_SHARED_SECRET:-}}"
 
 usage() {
   cat <<'EOF'
