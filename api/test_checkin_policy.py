@@ -94,7 +94,7 @@ class CheckinPolicyTests(APITestCase):
         for _ in range(2):
             response = self.client.get(url)
             self.assertEqual(response.status_code, 200)
-            response.close()
+            b''.join(response.streaming_content)
         self.assertEqual(self.client.post(f'/api-v1/checkins/{checkin.pk}/review/', {'approved': True}, format='json').status_code, 403)
         deletion = f'/api-v1/checkins/{checkin.pk}/delete-evidence/'
         self.assertEqual(self.client.post(deletion, {'reason': 'Sensitive'}, format='json').status_code, 403)
@@ -132,7 +132,7 @@ class CheckinPolicyTests(APITestCase):
             self.assertEqual(response['Cache-Control'], 'private, no-store, max-age=0')
             self.assertEqual(response['Content-Security-Policy'], "sandbox; default-src 'none'")
         finally:
-            response.close()
+            b''.join(response.streaming_content)
 
     def test_unsafe_and_unknown_evidence_is_download_only(self):
         checkin = self.schedule()
@@ -148,7 +148,7 @@ class CheckinPolicyTests(APITestCase):
                     self.assertEqual(response['X-Content-Type-Options'], 'nosniff')
                     self.assertEqual(response['Cache-Control'], 'private, no-store, max-age=0')
                 finally:
-                    response.close()
+                    b''.join(response.streaming_content)
 
     def test_no_cycle_reassignment_or_duplicate_submission(self):
         checkin = self.schedule()
@@ -233,7 +233,7 @@ class CheckinPolicyTests(APITestCase):
                 download = self.client.get(f'/api-v1/checkins/{checkin.pk}/evidence/')
                 self.assertEqual(download['Content-Type'], mime)
                 self.assertTrue(download['Content-Disposition'].startswith('attachment;'))
-                download.close()
+                b''.join(download.streaming_content)
         checkin.evidence = None
         checkin.save()
         response = self.client.get(f'/api-v1/checkins/{checkin.pk}/')

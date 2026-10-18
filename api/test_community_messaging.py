@@ -112,7 +112,7 @@ class CommunityMessagingPolicyTests(APITestCase):
         self.client.force_authenticate(self.owner)
         response = self.client.get(f'/api-v1/community/messages/{message.pk}/retained-attachment/')
         self.assertEqual(response.status_code, 200)
-        response.close()
+        b''.join(response.streaming_content)
         report.status = 'dismissed'
         report.save()
         with self.captureOnCommitCallbacks(execute=True):
@@ -129,7 +129,7 @@ class CommunityMessagingPolicyTests(APITestCase):
         self.assertIsNone(data['reply_to'])
         response = self.client.get(f'/api-v1/community/messages/{old.pk}/attachment/')
         self.assertEqual(response.status_code, 200)
-        response.close()
+        b''.join(response.streaming_content)
         self.membership.state = 'removed'
         self.membership.save()
         self.assertEqual(self.client.get(f'/api-v1/community/messages/{old.pk}/attachment/').status_code, 404)
@@ -209,7 +209,7 @@ class CommunityMessagingPolicyTests(APITestCase):
         self.assertIsNone(evidence.data['reply_to'])
         attachment = self.client.get(evidence_url, {'file': '1'})
         self.assertEqual(attachment.status_code, 200)
-        attachment.close()
+        b''.join(attachment.streaming_content)
         url = '/api-v1/community/messages/delete-selection/'
         self.assertEqual(self.client.post(url, {'ids': [message.pk], 'scope': 'everyone'}, format='json').status_code, 400)
         response = self.client.post(url, {'ids': [message.pk], 'scope': 'everyone', 'reason': 'Reported harassment'}, format='json')
@@ -572,7 +572,7 @@ class CommunityMessagingPolicyTests(APITestCase):
                 response = self.client.get(f'/api-v1/community/messages/{message.pk}/attachment/')
                 self.assertEqual(response['Content-Type'], 'application/octet-stream')
                 self.assertTrue(response['Content-Disposition'].startswith('attachment;'))
-                response.close()
+                b''.join(response.streaming_content)
                 data = self.client.get(f'/api-v1/messages/{message.pk}/').data
                 self.assertEqual(data['attachment_mime'], 'application/octet-stream')
                 ContentReport.objects.create(message=message, reporter=self.owner, reason='spam')
@@ -581,7 +581,7 @@ class CommunityMessagingPolicyTests(APITestCase):
                 response = self.client.get(f'/api-v1/community/messages/{message.pk}/report-evidence/?file=1')
                 self.assertEqual(response['Content-Type'], 'application/octet-stream')
                 self.assertTrue(response['Content-Disposition'].startswith('attachment;'))
-                response.close()
+                b''.join(response.streaming_content)
     def test_socket_conversation_list_matches_internal_community_scope(self):
         from .consumers import ConversationsConsumer, _ScopeRequest
         goal, pod = self.pod_for_internal_access()

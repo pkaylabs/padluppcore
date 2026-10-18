@@ -654,7 +654,7 @@ class CommunityDomainTests(APITestCase):
             self.assertTrue(created.invitations.filter(user=self.other, status='pending').exists())
             cover = self.client.get(f'/api-v1/community/tasks/{created.id}/cover/')
             self.assertEqual(cover.status_code, 200)
-            cover.close()
+            b''.join(cover.streaming_content)
             self.login(self.other)
             self.post(f'tasks/{created.id}/respond/', {'decision': 'decline'})
             self.assertEqual(self.client.get(f'/api-v1/community/tasks/{created.id}/cover/').status_code, 404)

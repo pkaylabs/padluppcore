@@ -270,7 +270,7 @@ class CommunityAcceptanceTests(CommunityFixtures, APITestCase):
         response = self.client.get(f'/api-v1/community/messages/{before.pk}/attachment/')
         self.assertEqual(response.status_code, 200)
         self.assertIn('no-store', response['Cache-Control'])
-        response.close()
+        b''.join(response.streaming_content)
 
     def test_voluntary_leave_blocks_new_content_rest_and_socket_helpers(self):
         prior = self.message(attachment=True)
@@ -656,7 +656,7 @@ class CommunityAcceptanceTests(CommunityFixtures, APITestCase):
         download = self.client.get(url, {'file': '1'})
         self.assertEqual(download.status_code, 200)
         self.assertIn('no-store', download['Cache-Control'])
-        download.close()
+        b''.join(download.streaming_content)
         report.status = 'dismissed'
         report.save(update_fields=['status'])
         self.denied(self.client.get(url))
