@@ -301,7 +301,7 @@ class BuddyEndpointsTests(APITestCase):
 		self.assertEqual(inv2.status_code, status.HTTP_200_OK)
 		self.assertEqual(len(inv2.data), 0)
 
-	def test_finder_excludes_existing_connections_and_marks_pending(self):
+	def test_finder_includes_existing_connections_and_unrelated_users_and_marks_pending(self):
 		# Create an existing connection (partnership) between self.user and self.other
 		user_a, user_b = sorted([self.user, self.other], key=lambda u: u.id)
 		Partnership.objects.create(user_a=user_a, user_b=user_b)
@@ -314,15 +314,17 @@ class BuddyEndpointsTests(APITestCase):
 		self.assertEqual(resp.status_code, status.HTTP_200_OK)
 		returned_user_ids = {row['user']['id'] for row in resp.data}
 
-		# Existing buddy should be excluded
-		self.assertNotIn(self.other.id, returned_user_ids)
+		# The directory includes existing buddies and identifies their connection.
+		self.assertIn(self.other.id, returned_user_ids)
+		connected_row = next(r for r in resp.data if r['user']['id'] == self.other.id)
+		self.assertEqual(connected_row['connection_status'], 'connected')
 		# Pending request profile should be included even if not similar
 		self.assertIn(self.pending_target.id, returned_user_ids)
 		pending_row = next(r for r in resp.data if r['user']['id'] == self.pending_target.id)
 		self.assertEqual(pending_row['connection_status'], 'pending')
 		self.assertIsNotNone(pending_row['buddy_request_id'])
-		# Unrelated and not pending should not appear
-		self.assertNotIn(self.not_similar.id, returned_user_ids)
+		# No compatibility/profile-completeness restriction applies to the directory.
+		self.assertIn(self.not_similar.id, returned_user_ids)
 
 	def test_connections_returns_buddy_profiles(self):
 		user_a, user_b = sorted([self.user, self.other], key=lambda u: u.id)

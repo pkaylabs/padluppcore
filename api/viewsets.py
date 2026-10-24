@@ -14,6 +14,7 @@ from rest_framework import mixins, permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.pagination import PageNumberPagination
 from drf_spectacular.utils import OpenApiParameter, OpenApiTypes, extend_schema
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
@@ -69,6 +70,7 @@ from .serializers import (
 	TimerSessionSerializer,
 	MessageSerializer,
 	UserSerializer,
+	UserProfileResponseSerializer,
 	WaitlisterSerializer,
 	LongestStreakResponseSerializer,
 	AwardsResponseSerializer,
@@ -258,6 +260,12 @@ def _set_last_login(user: User, at: datetime | None = None) -> datetime:
 	return now
 
 
+class BuddyDirectoryPagination(PageNumberPagination):
+	page_size = 12
+	page_size_query_param = 'page_size'
+	max_page_size = 48
+
+
 class BuddyViewSet(viewsets.ViewSet):
 	permission_classes = [permissions.IsAuthenticated]
 
@@ -273,82 +281,86 @@ class BuddyViewSet(viewsets.ViewSet):
 		buddy_ids.difference_update(_blocked_user_ids(user))
 		return buddy_ids
 
+	def _directory_queryset(self, request, query=''):
+		from django.db.models.functions import Coalesce, Greatest, Lower, Trim
+
+		# SQLite's Greatest propagates NULLs; coalesce each timestamp with the
+		# other so either real activity wins, while two missing values stay NULL.
+		qs = User.objects.select_related('profile').filter(is_active=True, deleted=False).exclude(
+			pk__in=_blocked_user_ids(request.user) | {request.user.pk},
+		).annotate(
+			last_active_at=Greatest(Coalesce('last_seen_at', 'last_login'), Coalesce('last_login', 'last_seen_at')),
+		).annotate(directory_sort_at=Coalesce('last_active_at', 'created_at'))
+		if query:
+			words = [word.strip(' ,.;:!"\'()[]{}') for word in query.split()]
+			name_filter = models.Q()
+			for word in filter(None, words):
+				name_filter |= models.Q(name__icontains=word)
+			# Search public names only: an email address is not directory identity.
+			qs = qs.filter(name_filter) if name_filter else qs.none()
+		category = (request.query_params.get('category') or '').strip().casefold()
+		if category:
+			category_aliases = {
+				'career': ['career', 'career building', 'work'],
+				'business': ['business', 'site or blog', 'finance', 'project tracking'],
+				'study': ['study', 'book and media', 'education'],
+				'personal growth': ['personal growth', 'personal life', 'travel', 'nutrition', 'to - do list', 'to-do list', 'hobbies', 'habit tracking'],
+			}
+			if category not in category_aliases:
+				raise ValidationError({'category': 'Use Career, Business, Study or Personal Growth.'})
+			# Category discovery must not reveal private goals. As with public
+			# previews, a pod's enrollment flag does not make its goal public.
+			matching_goals = Goal.objects.filter(
+				user_id=models.OuterRef('pk'), is_public=True, community_task__isnull=True,
+			).annotate(
+				directory_category=Lower(Trim('category')),
+			).filter(directory_category__in=category_aliases[category])
+			qs = qs.filter(models.Exists(matching_goals))
+		return qs.order_by('-directory_sort_at', 'id')
+
+	def _directory_response(self, request, query=''):
+		qs = self._directory_queryset(request, query)
+		paginator = BuddyDirectoryPagination() if 'page' in request.query_params else None
+		users = list(paginator.paginate_queryset(qs, request, view=self) if paginator else qs)
+		user_ids = [user.pk for user in users]
+		pending_requests = {}
+		for row in BuddyRequest.objects.filter(
+			models.Q(from_user=request.user, to_user_id__in=user_ids)
+			| models.Q(to_user=request.user, from_user_id__in=user_ids),
+			status=BuddyRequest.STATUS_PENDING,
+		).order_by('-created_at', '-id').values('id', 'from_user_id', 'to_user_id'):
+			incoming = row['to_user_id'] == request.user.pk
+			other_id = row['from_user_id'] if incoming else row['to_user_id']
+			# Prefer an actionable incoming request if legacy opposite-direction
+			# requests both exist for the same pair.
+			if other_id not in pending_requests or incoming:
+				pending_requests[other_id] = {'id': row['id'], 'direction': 'incoming' if incoming else 'outgoing'}
+		profiles = []
+		for user in users:
+			profile = getattr(user, 'profile', None) or Profile(user=user, interests='')
+			profile.last_active_at = user.last_active_at
+			profiles.append(profile)
+		data = BuddyFinderProfileSerializer(profiles, many=True, context={
+			'request': request,
+			'source_profile': getattr(request.user, 'profile', None),
+			'connected_user_ids': self._buddy_user_ids(request.user),
+			'pending_requests': pending_requests,
+		}).data
+		return paginator.get_paginated_response(data) if paginator else Response(data)
+
 	@extend_schema(
+		parameters=[
+			OpenApiParameter(name='query', type=OpenApiTypes.STR, description='Search public names.'),
+			OpenApiParameter(name='category', type=OpenApiTypes.STR, description='Filter by the candidate\'s public non-pod goal category: Career, Business, Study or Personal Growth.'),
+			OpenApiParameter(name='page', type=OpenApiTypes.INT, description='Opt into count/next/previous/results pagination; omitted returns a legacy array.'),
+			OpenApiParameter(name='page_size', type=OpenApiTypes.INT, description='Paginated page size, default 12, maximum 48.'),
+		],
 		responses={200: BuddyFinderProfileSerializer(many=True)},
-		description="List profiles with similar experience and pending requests."
+		description='List other active registered users, newest real activity first, with registration fallback and stable user ID ties. last_active_at remains null when no activity is recorded.'
 	)
 	@action(detail=False, methods=['get'], url_path='finder')
 	def finder(self, request):
-		"""List eligible profiles ordered by stable compatibility score."""
-		user = request.user
-		category = (request.query_params.get('category') or '').strip().casefold()
-		profile, _ = Profile.objects.get_or_create(user=user)
-		buddy_user_ids = self._buddy_user_ids(user)
-
-		pending_requests = BuddyRequest.objects.filter(
-			from_user=user,
-			status=BuddyRequest.STATUS_PENDING,
-		)
-		pending_to_user_ids = set(pending_requests.values_list('to_user_id', flat=True))
-		pending_request_id_by_to_user_id = {
-			row['to_user_id']: row['id']
-			for row in pending_requests.values('id', 'to_user_id')
-		}
-
-		# Likes and passes cool down after 30 days. This prevents immediate repeats
-		# without making a person permanently undiscoverable.
-		recently_swiped_ids = Match.objects.filter(
-			from_user=user,
-			created_at__gte=timezone.now() - timedelta(days=30),
-		).values_list('to_user_id', flat=True)
-		excluded_user_ids = set(buddy_user_ids) | set(recently_swiped_ids) | _blocked_user_ids(user) | {user.id}
-
-		qs = (
-			Profile.objects.select_related('user')
-			.filter(user__is_active=True, user__deleted=False)
-			.exclude(user_id__in=excluded_user_ids)
-		)
-		profiles = list(qs)
-		if category:
-			profiles = [
-				candidate for candidate in profiles
-				if category in ' '.join([
-					candidate.experience or '',
-					candidate.interests or '',
-					' '.join(candidate.focus_areas or []),
-				]).casefold()
-				or candidate.user_id in pending_to_user_ids
-			]
-		if any([
-			(profile.experience or '').strip(),
-			(profile.interests or '').strip(),
-			profile.focus_areas,
-			profile.availability,
-			profile.communication_styles,
-		]):
-			profiles = [
-				candidate for candidate in profiles
-				if compatibility_details(profile, candidate)['score'] > 0
-				or candidate.user_id in pending_to_user_ids
-			]
-		profiles.sort(
-			key=lambda candidate: (
-				-compatibility_details(profile, candidate)['score'],
-				-candidate.created_at.timestamp(),
-				candidate.user_id,
-			)
-		)
-		serializer = BuddyFinderProfileSerializer(
-			profiles,
-			many=True,
-			context={
-				'request': request,
-				'source_profile': profile,
-				'pending_to_user_ids': pending_to_user_ids,
-				'pending_request_id_by_to_user_id': pending_request_id_by_to_user_id,
-			},
-		)
-		return Response(serializer.data)
+		return self._directory_response(request, (request.query_params.get('query') or '').strip())
 
 
 	@extend_schema(
@@ -634,12 +646,12 @@ class BuddyViewSet(viewsets.ViewSet):
 			return Response({'detail': 'user_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
 		if str(request.user.id) == str(user_id):
 			return Response({'detail': 'Use your own profile endpoint for the current user.'}, status=status.HTTP_400_BAD_REQUEST)
-		other_user = User.objects.filter(id=user_id, deleted=False).first()
+		other_user = User.objects.select_related('profile').filter(id=user_id, is_active=True, deleted=False).first()
 		if not other_user:
 			return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
 		if _users_blocked_each_other(request.user.id, other_user.id):
 			return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
-		profile, _ = Profile.objects.get_or_create(user=other_user)
+		profile = getattr(other_user, 'profile', None) or Profile(user=other_user, interests='')
 		return Response(BuddyProfileResponseSerializer({'user': other_user, 'profile': profile}, context={'request': request}).data)
 
 	@extend_schema(
@@ -661,14 +673,14 @@ class BuddyViewSet(viewsets.ViewSet):
 				type=OpenApiTypes.STR,
 				location=OpenApiParameter.QUERY,
 				required=True,
-				description='Search text. Split into words; matches buddies where name contains any word.',
+				description='Search public names; matches any word. Uses the same access rules and activity ordering as Finder.',
 			),
+			OpenApiParameter(name='category', type=OpenApiTypes.STR, description='Core category of the candidate\'s public non-pod goals only.'),
+			OpenApiParameter(name='page', type=OpenApiTypes.INT, description='Opt into pagination; omitted returns a legacy array.'),
+			OpenApiParameter(name='page_size', type=OpenApiTypes.INT, description='Default 12, maximum 48.'),
 		],
-		responses={200: ProfileSerializer(many=True), 400: DetailResponseSerializer},
-		description=(
-			"Search within the current user's buddy connections by name. "
-			"Splits `query` into words and matches if any word appears in the buddy's name."
-		),
+		responses={200: BuddyFinderProfileSerializer(many=True), 400: DetailResponseSerializer},
+		description='Search other active registered users by public name, newest activity first. Supports optional pagination and candidate goal-category filtering.',
 	)
 	@action(detail=False, methods=['get'], url_path='search')
 	def search(self, request):
@@ -681,22 +693,7 @@ class BuddyViewSet(viewsets.ViewSet):
 		if not words:
 			return Response({'detail': 'query is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-		user = request.user
-		# buddy_ids = self._buddy_user_ids(user)
-		name_q = models.Q()
-		email_q = models.Q()
-		for w in words:
-			name_q |= models.Q(user__name__icontains=w)
-			email_q |= models.Q(user__email__icontains=w)
-
-		qs = (
-			Profile.objects.select_related('user')
-			# .filter(user_id__in=buddy_ids)
-			.filter(name_q | email_q)
-			.distinct()
-			.order_by('-created_at')
-		)
-		return Response(ProfileSerializer(qs, many=True, context={'request': request}).data)
+		return self._directory_response(request, query)
 
 
 class EventViewSet(viewsets.ModelViewSet):
@@ -865,6 +862,8 @@ class OnboardingViewSet(viewsets.ViewSet):
 		parser_classes=[MultiPartParser, FormParser],
 	)
 	def user_avatar(self, request):
+		# Uploading/editing an avatar is independent of onboarding completion.
+		# Clients must finish via /onboarding/complete/, which checks the bio.
 		user = request.user
 		avatar = request.data.get('avatar')
 		if not avatar:
@@ -876,55 +875,47 @@ class OnboardingViewSet(viewsets.ViewSet):
 	@extend_schema(
 		request=ProfileExperienceRequestSerializer,
 		responses={200: ProfileSerializer},
-		description='Set experience and interests for current user profile.'
+		description='Set experience, interests and/or a nonblank bio without overwriting omitted profile fields.'
 	)
 	@action(detail=False, methods=['post'], url_path='set-experience', permission_classes=[permissions.IsAuthenticated])
 	def set_experience(self, request):
-		profile, _ = Profile.objects.get_or_create(user=request.user)
-		experience = request.data.get('experience')
-		interests = request.data.get('interests')
-		if experience is not None:
-			profile.experience = experience
-		if interests is not None:
-			# Stored as comma-separated text; API accepts list or string.
-			if isinstance(interests, list):
-				profile.interests = ','.join([str(i).strip() for i in interests if str(i).strip()])
-			elif isinstance(interests, str):
-				profile.interests = interests
-			else:
-				return Response({'detail': 'interests must be a list of strings or a comma-separated string.'}, status=status.HTTP_400_BAD_REQUEST)
-		profile.save(update_fields=['experience', 'interests'])
-		return Response(ProfileSerializer(profile, context={'request': request}).data)
+		return self._save_experience(request)
 
 	@extend_schema(
 		request=ProfileExperienceRequestSerializer,
 		responses={200: ProfileSerializer, 400: DetailResponseSerializer},
-		description='Update experience and/or interests for current user profile.'
+		description='Partially update experience, interests and/or a nonblank bio.'
 	)
 	@action(detail=False, methods=['patch'], url_path='update-experience', permission_classes=[permissions.IsAuthenticated])
 	def update_experience(self, request):
+		return self._save_experience(request, require_changes=True)
+
+	def _save_experience(self, request, require_changes=False):
+		serializer = ProfileExperienceRequestSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		values = {key: value for key, value in serializer.validated_data.items() if value is not None}
+		if require_changes and not values:
+			return Response({'detail': 'Provide experience, interests and/or bio.'}, status=status.HTTP_400_BAD_REQUEST)
 		profile, _ = Profile.objects.get_or_create(user=request.user)
-		experience = request.data.get('experience')
-		interests = request.data.get('interests')
-
-		if experience is None and interests is None:
-			return Response({'detail': 'Provide experience and/or interests.'}, status=status.HTTP_400_BAD_REQUEST)
-
-		updated_fields = []
-		if experience is not None:
-			profile.experience = experience
-			updated_fields.append('experience')
-		if interests is not None:
-			if isinstance(interests, list):
-				profile.interests = ','.join([str(i).strip() for i in interests if str(i).strip()])
-			elif isinstance(interests, str):
-				profile.interests = interests
-			else:
-				return Response({'detail': 'interests must be a list of strings or a comma-separated string.'}, status=status.HTTP_400_BAD_REQUEST)
-			updated_fields.append('interests')
-
-		profile.save(update_fields=updated_fields)
+		for key, value in values.items():
+			setattr(profile, key, value)
+		if values:
+			profile.save(update_fields=[*values, 'updated_at'])
 		return Response(ProfileSerializer(profile, context={'request': request}).data)
+
+	@extend_schema(
+		request=None,
+		responses={200: UserProfileResponseSerializer, 400: DetailResponseSerializer},
+		description='Complete onboarding after saving a nonblank bio. Avatar upload is optional and never completes onboarding by itself.',
+	)
+	@action(detail=False, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+	def complete(self, request):
+		profile = Profile.objects.filter(user=request.user).first()
+		if not profile or not (profile.bio or '').strip():
+			raise ValidationError({'bio': 'Add a bio before completing onboarding.'})
+		return Response(UserProfileResponseSerializer(
+			{'user': request.user, 'profile': profile}, context={'request': request},
+		).data)
 
 
 
@@ -2267,6 +2258,12 @@ class SubTaskViewSet(CommunityWorkBoundaryMixin, viewsets.ModelViewSet):
 		if task.owner_id != self.request.user.id:
 			raise PermissionDenied('Only the task owner can create subtasks.')
 		serializer.save(owner=self.request.user)
+
+	def perform_update(self, serializer):
+		task = serializer.validated_data.get('task', serializer.instance.task)
+		if task.owner_id != self.request.user.id:
+			raise PermissionDenied('Only the task owner can modify subtasks.')
+		serializer.save()
 
 
 class TimerSessionViewSet(CommunityWorkBoundaryMixin, viewsets.ReadOnlyModelViewSet):

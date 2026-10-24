@@ -238,6 +238,7 @@ class CommaSeparatedListField(serializers.Field):
 
 class ProfileSerializer(serializers.ModelSerializer):
 	user = PublicUserSerializer(read_only=True)
+	bio = serializers.CharField(required=False, allow_blank=False, trim_whitespace=True)
 	interests = CommaSeparatedListField(required=False)
 	compatibility_score = serializers.SerializerMethodField()
 	rating = serializers.SerializerMethodField()
@@ -1163,22 +1164,32 @@ class BuddyFinderProfileSerializer(ProfileSerializer):
 	"""
 	connection_status = serializers.SerializerMethodField()
 	buddy_request_id = serializers.SerializerMethodField()
+	pending_direction = serializers.SerializerMethodField()
+	last_active_at = serializers.DateTimeField(read_only=True, allow_null=True)
 
 	class Meta(ProfileSerializer.Meta):
-		fields = ProfileSerializer.Meta.fields + ['connection_status', 'buddy_request_id']
+		fields = ProfileSerializer.Meta.fields + ['connection_status', 'buddy_request_id', 'pending_direction', 'last_active_at']
 
 	@extend_schema_field(serializers.CharField())
 	def get_connection_status(self, obj):
-		pending_to_user_ids = self.context.get('pending_to_user_ids', set())
-		return 'pending' if obj.user_id in pending_to_user_ids else 'none'
+		if obj.user_id in self.context.get('connected_user_ids', set()):
+			return 'connected'
+		return 'pending' if obj.user_id in self.context.get('pending_requests', {}) else 'none'
 
 	@extend_schema_field(serializers.IntegerField(allow_null=True))
 	def get_buddy_request_id(self, obj):
-		pending_request_id_by_to_user_id = self.context.get('pending_request_id_by_to_user_id', {})
-		return pending_request_id_by_to_user_id.get(obj.user_id)
+		if self.get_connection_status(obj) != 'pending':
+			return None
+		return self.context['pending_requests'][obj.user_id]['id']
+
+	@extend_schema_field(serializers.ChoiceField(choices=['incoming', 'outgoing'], allow_null=True))
+	def get_pending_direction(self, obj):
+		if self.get_connection_status(obj) != 'pending':
+			return None
+		return self.context['pending_requests'][obj.user_id]['direction']
 	
 class BuddyConnectSerializer(serializers.Serializer):
-	to_user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
+	to_user = serializers.PrimaryKeyRelatedField(queryset=User.objects.filter(is_active=True, deleted=False))
 	message = serializers.CharField(required=False, allow_blank=True, max_length=2000)
 
 
@@ -1228,9 +1239,10 @@ class UserAvatarRequestSerializer(serializers.Serializer):
 
 
 class ProfileExperienceRequestSerializer(serializers.Serializer):
-	"""Request body for updating profile experience and interests."""
-	experience = serializers.CharField(required=False, allow_blank=True)
-	interests = serializers.ListField(child=serializers.CharField(), required=False)
+	"""Partial onboarding fields; omitted values must leave existing data intact."""
+	experience = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+	interests = CommaSeparatedListField(required=False, allow_null=True)
+	bio = serializers.CharField(required=False, allow_blank=False, trim_whitespace=True)
 
 
 class TaskRequestChangesRequestSerializer(serializers.Serializer):
