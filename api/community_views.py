@@ -33,7 +33,8 @@ from .community_services import (
     audit, create_group, create_task, decide_group_request, decide_task_request,
     enrollment_status, generate_task_cycles, invite_task_users, join_group, join_task,
     leave_group, leave_task, manage_group_member, notify, notify_admin_shortage,
-    require_reason, request_task_link_join, resolve_inactivity_review, review_inactive_members, set_group_status, set_task_status,
+    require_reason, request_task_link_join, resolve_inactivity_review, review_inactive_members, revoke_group_invitation,
+    set_group_status, set_task_status,
 )
 from .models import ContentReport, Conversation, ConversationMembership, Goal, GoalCheckin, Message, UserBlock
 from .permissions import HasCronSecret
@@ -46,6 +47,16 @@ def member_data(member, request):
             'state': member.state, 'joined_at': member.joined_at, 'is_active': active_user(member.user),
             'muted_until': getattr(member, 'muted_until', None), 'misconduct': getattr(member, 'misconduct', False),
             'inactivity_review': {'id': review.id, 'last_login_at': review.last_login_at} if review else None}
+
+
+def group_invitation_data(invitation, request):
+    base = getattr(settings, 'PADLUPP_APP_URL', 'https://app.padlupp.com').rstrip('/')
+    is_link = invitation.user_id is None
+    return {'id': invitation.id, 'user': user_data(invitation.user, request),
+            'invited_by': user_data(invitation.invited_by, request), 'role': invitation.role,
+            'status': invitation.status, 'created_at': invitation.created_at, 'expires_at': invitation.expires_at,
+            'is_link': is_link,
+            'url': f'{base}/community?group={invitation.group_id}&invite={invitation.token}' if is_link else None}
 
 
 class CommunityPagination(PageNumberPagination):
@@ -275,6 +286,24 @@ class CommunityGroupViewSet(viewsets.GenericViewSet):
             return Response(member_data(membership, request))
         return Response([member_data(m, request) for m in group.memberships.filter(state='pending').select_related('user').prefetch_related('user__awards')])
 
+    @action(detail=True, methods=['get', 'post'])
+    def invitations(self, request, pk=None):
+        group = self.get_object()
+        if not can_manage_group(group, request.user):
+            raise PermissionDenied('Only group admins can manage invitations.')
+        if request.method == 'POST':
+            serializers.ChoiceField(choices=['revoke']).run_validation(request.data.get('action'))
+            raw_id = request.data.get('invitation_id')
+            if isinstance(raw_id, bool):
+                raise ValidationError({'invitation_id': 'A valid invitation ID is required.'})
+            invitation_id = serializers.IntegerField(min_value=1).run_validation(raw_id)
+            invitation = revoke_group_invitation(group, request.user, invitation_id)
+            return Response(group_invitation_data(invitation, request))
+        invitations = group.invitations.filter(status='pending', expires_at__gt=timezone.now()).select_related(
+            'user', 'invited_by').prefetch_related('user__awards', 'invited_by__awards').order_by('-created_at', '-pk')
+        page = self.paginate_queryset(invitations)
+        return self.get_paginated_response([group_invitation_data(invitation, request) for invitation in page])
+
     @action(detail=True, methods=['post'], url_path='invite-link')
     def invite_link(self, request, pk=None):
         group = self.get_object()
@@ -282,7 +311,8 @@ class CommunityGroupViewSet(viewsets.GenericViewSet):
             raise PermissionDenied()
         invitation = CommunityInvite.objects.create(group=group, invited_by=request.user, expires_at=timezone.now() + timedelta(days=7))
         base = getattr(settings, 'PADLUPP_APP_URL', 'https://app.padlupp.com').rstrip('/')
-        return Response({'url': f'{base}/community?group={group.id}&invite={invitation.token}', 'token': str(invitation.token), 'expires_at': invitation.expires_at})
+        return Response({'id': invitation.id, 'url': f'{base}/community?group={group.id}&invite={invitation.token}',
+                         'token': str(invitation.token), 'expires_at': invitation.expires_at})
 
     @action(detail=True, methods=['post'], url_path='respond-invitation')
     def respond_invitation(self, request, pk=None):

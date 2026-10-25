@@ -6,7 +6,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
 from .community_access import (
     active_user, can_create_group, can_manage_group, can_manage_task, can_post_group,
@@ -47,6 +47,7 @@ def notify(user_ids, event, payload, reminder=False):
         users = users.filter(notify_on_reminders=True)
     labels = {
         'community_invitation': 'You have been invited to a community group.',
+        'community_invitation_revoked': 'Your community group invitation has been revoked.',
         'community_join_requested': 'A member has requested to join your group.',
         'community_joined': 'Your community group membership is now active.',
         'community_join_decision': 'Your community join request has been reviewed.',
@@ -163,6 +164,32 @@ def join_group(group, actor, token=None):
     audit(actor, 'group.joined', membership, group=group)
     notify([actor.id], 'community_joined', {'group_id': group.id})
     return membership
+
+
+@transaction.atomic
+def revoke_group_invitation(group, actor, invitation_id):
+    # Match join_group's lock order so acceptance and revocation cannot race.
+    group = CommunityGroup.objects.select_for_update().get(pk=group.pk)
+    if not can_manage_group(group, actor):
+        raise PermissionDenied('Only group admins can revoke invitations.')
+    invitation = group.invitations.select_for_update().filter(pk=invitation_id).first()
+    if invitation is None:
+        raise NotFound('Invitation not found in this group.')
+    if invitation.status == 'revoked':
+        return invitation
+    if invitation.status != 'pending':
+        raise ValidationError('Only pending invitations can be revoked.')
+    if invitation.expires_at <= timezone.now():
+        raise ValidationError('This invitation has expired.')
+    invitation.status = 'revoked'
+    invitation.save(update_fields=['status', 'updated_at'])
+    audit(actor, 'group.invitation.revoked', invitation, group=group,
+          metadata={'user_id': invitation.user_id, 'role': invitation.role,
+                    'is_link': invitation.user_id is None})
+    if invitation.user_id is not None:
+        notify([invitation.user_id], 'community_invitation_revoked',
+               {'group_id': group.id, 'invitation_id': invitation.id})
+    return invitation
 
 
 @transaction.atomic
