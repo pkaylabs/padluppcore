@@ -740,6 +740,7 @@ class MessageSerializer(serializers.ModelSerializer):
 	can_moderate = serializers.SerializerMethodField()
 	is_pinned = serializers.SerializerMethodField()
 	reactions = serializers.SerializerMethodField()
+	can_react = serializers.SerializerMethodField()
 
 	class Meta:
 		model = Message
@@ -761,7 +762,7 @@ class MessageSerializer(serializers.ModelSerializer):
 			'recalled_at',
 			'is_recalled',
 			'can_recall',
-			'can_delete_everyone', 'can_moderate', 'is_pinned', 'deletion_kind', 'reactions', 'poll',
+			'can_delete_everyone', 'can_moderate', 'is_pinned', 'deletion_kind', 'reactions', 'can_react', 'poll',
 			'created_at',
 			'updated_at',
 		]
@@ -785,7 +786,7 @@ class MessageSerializer(serializers.ModelSerializer):
 		if self.context.get('resources'):
 			data['links'] = re.findall(r'https?://[^\s<>"\x27]+', instance.text) if not instance.recalled_at else []
 		if outside_chat:
-			data.update({'text': '', 'reply_to': None, 'metadata': {}, 'poll': None, 'reactions': []})
+			data.update({'text': '', 'reply_to': None, 'metadata': {}, 'poll': None, 'reactions': [], 'can_react': False})
 		if instance.recalled_at:
 			data.update({
 				'text': 'This message was removed by a moderator' if instance.deletion_kind == 'moderator' else 'This message was deleted',
@@ -820,6 +821,12 @@ class MessageSerializer(serializers.ModelSerializer):
 
 	def get_reactions(self, obj):
 		return [] if obj.recalled_at else [{'emoji': reaction.emoji, 'user': PublicUserSerializer(reaction.user, context=self.context).data} for reaction in obj.reactions.all()]
+
+	@extend_schema_field(serializers.BooleanField())
+	def get_can_react(self, obj):
+		from .community_messaging import can_interact
+		user = getattr(self.context.get('request'), 'user', None)
+		return bool(user and user.is_authenticated and not obj.recalled_at and can_interact(obj.conversation, user))
 
 	@extend_schema_field(MessageReplySerializer)
 	def get_reply_to(self, obj):
