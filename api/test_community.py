@@ -625,9 +625,9 @@ class CommunityDomainTests(APITestCase):
         self.post(f'tasks/{task.id}/join/')
         award, _ = UserAward.objects.get_or_create(user=self.member, award_key='goal_started')
         UserAward.objects.get_or_create(user=self.member, award_key='unknown_future_award')
-        expected = [{'id': earned.id, 'key': earned.award_key, 'name': AWARD_BY_KEY[earned.award_key].title}
+        expected = [{'id': earned.id, 'key': earned.award_key, 'name': AWARD_BY_KEY[earned.award_key].title, 'legacy': True}
                     for earned in self.member.awards.all() if earned.award_key in AWARD_BY_KEY]
-        self.assertIn({'id': award.id, 'key': 'goal_started', 'name': AWARD_BY_KEY['goal_started'].title}, expected)
+        self.assertIn({'id': award.id, 'key': 'goal_started', 'name': AWARD_BY_KEY['goal_started'].title, 'legacy': True}, expected)
         before = list(UserAward.objects.order_by('id').values())
         notification_count = Notification.objects.count()
         with patch('api.awards.award_progress_for_user', side_effect=AssertionError('Read must not calculate awards')):

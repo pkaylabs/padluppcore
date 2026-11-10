@@ -13,6 +13,7 @@ from .community_views import (
     CommunityTaskViewSet, CommunityUsersView,
 )
 from .community_messaging import CommunityMessageViewSet
+from .achievement_views import AchievementViewSet
 
 from .viewsets import (
 	AwardViewSet,
@@ -57,6 +58,7 @@ router.register('messages', MessageViewSet, basename='messages')
 router.register('waitlist', WaitlistViewSet, basename='waitlist')
 router.register('stats', StatsViewSet, basename='stats')
 router.register('awards', AwardViewSet, basename='awards')
+router.register('achievements', AchievementViewSet, basename='achievements')
 router.register('community/groups', CommunityGroupViewSet, basename='community-group')
 router.register('community/tasks', CommunityTaskViewSet, basename='community-task')
 router.register('community/messages', CommunityMessageViewSet, basename='community-message')

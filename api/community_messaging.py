@@ -630,6 +630,7 @@ class CommunityMessageViewSet(mixins.CreateModelMixin, mixins.ListModelMixin, mi
         return message
 
     @action(detail=True, methods=['post'])
+    @transaction.atomic
     def react(self, request, pk=None):
         message = self._writable_message()
         emoji = str(request.data.get('emoji', '')).strip()
@@ -638,6 +639,9 @@ class CommunityMessageViewSet(mixins.CreateModelMixin, mixins.ListModelMixin, mi
         reaction, created = MessageReaction.objects.get_or_create(message=message, user=request.user, emoji=emoji)
         if not created:
             reaction.delete()
+        else:
+            from .achievements import record_positive_reaction
+            record_positive_reaction(message, request.user, emoji)
         broadcast_message(message.pk, message.conversation_id)
         message.refresh_from_db()
         return Response(self.get_serializer(message).data)

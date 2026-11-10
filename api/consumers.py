@@ -647,14 +647,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Mark a list of messages as read (optional helper for unread counts)
         if msg_type == 'read':
             ids = data.get('message_ids') or []
-            if not isinstance(ids, list) or not all(isinstance(x, int) for x in ids):
+            if not isinstance(ids, list) or not all(type(x) is int and x > 0 for x in ids):
                 return
-            await self.mark_messages_read(user.id, self.conversation_id, ids)
+            marked_ids = await self.mark_messages_read(user.id, self.conversation_id, ids)
+            if not marked_ids:
+                return
             await self.channel_layer.group_send(
                 self.group_name,
                 {
                     'type': 'chat.read',
-                    'message_ids': ids,
+                    'message_ids': marked_ids,
+                    'conversation_id': self.conversation_id,
                     'by_user_id': user.id,
                 },
             )
@@ -663,11 +666,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # Mark all messages as read (optional helper)
         if msg_type == 'read_all':
-            await self.mark_all_messages_read(user.id, self.conversation_id)
+            marked_ids = await self.mark_all_messages_read(user.id, self.conversation_id)
+            if not marked_ids:
+                return
             await self.channel_layer.group_send(
                 self.group_name,
                 {
                     'type': 'chat.read_all',
+                    'message_ids': marked_ids,
+                    'conversation_id': self.conversation_id,
                     'by_user_id': user.id,
                 },
             )
@@ -838,18 +845,28 @@ class ChatConsumer(AsyncWebsocketConsumer):
             pass
 
     async def chat_read(self, event):
+        if event.get('by_user_id') == self.scope['user'].id:
+            return
         if not await self.can_write_current_conversation():
             return
         try:
-            await self.send_json({'type': 'read', 'message_ids': event['message_ids'], 'by_user_id': event['by_user_id']})
+            await self.send_json({
+                'type': 'read', 'message_ids': event['message_ids'],
+                'by_user_id': event['by_user_id'], 'conversation_id': self.conversation_id,
+            })
         except Exception:
             pass
 
     async def chat_read_all(self, event):
+        if event.get('by_user_id') == self.scope['user'].id:
+            return
         if not await self.can_write_current_conversation():
             return
         try:
-            await self.send_json({'type': 'read_all', 'by_user_id': event['by_user_id']})
+            await self.send_json({
+                'type': 'read_all', 'message_ids': event['message_ids'],
+                'by_user_id': event['by_user_id'], 'conversation_id': self.conversation_id,
+            })
         except Exception:
             pass
 
@@ -1082,23 +1099,27 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def mark_messages_read(self, user_id: int, conversation_id, message_ids: list[int]):
-        from .community_messaging import visible_messages
-        user = User.objects.get(pk=user_id)
-        return (
-            visible_messages(Message.objects.filter(conversation_id=conversation_id, id__in=message_ids), user)
-            .exclude(sender_id=user_id)
-            .update(is_read=True, updated_at=timezone.now())
-        )
+        return self._mark_unread_messages(user_id, conversation_id, message_ids)
 
     @database_sync_to_async
     def mark_all_messages_read(self, user_id: int, conversation_id):
+        return self._mark_unread_messages(user_id, conversation_id)
+
+    def _mark_unread_messages(self, user_id, conversation_id, message_ids=None):
         from .community_messaging import visible_messages
         user = User.objects.get(pk=user_id)
-        return (
+        unread = (
             visible_messages(Message.objects.filter(conversation_id=conversation_id, is_read=False), user)
             .exclude(sender_id=user_id)
-            .update(is_read=True, updated_at=timezone.now())
         )
+        if message_ids is not None:
+            unread = unread.filter(pk__in=message_ids)
+        marked_ids = list(unread.order_by('id').values_list('id', flat=True))
+        # Keep the update and receipt bounded to the same snapshot of message IDs.
+        # A newer message arriving after this query has not been acknowledged.
+        if marked_ids:
+            unread.filter(pk__in=marked_ids).update(is_read=True, updated_at=timezone.now())
+        return marked_ids
 
     @database_sync_to_async
     def get_user_from_token(self, token):

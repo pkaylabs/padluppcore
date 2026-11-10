@@ -251,6 +251,7 @@ class UserAward(TimeStampedModel):
 	user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='awards')
 	award_key = models.CharField(max_length=64)
 	unlocked_at = models.DateTimeField(default=timezone.now)
+	claimed_at = models.DateTimeField(null=True, blank=True)
 	progress_snapshot = models.PositiveIntegerField(default=0)
 
 	class Meta:
@@ -260,6 +261,21 @@ class UserAward(TimeStampedModel):
 		indexes = [
 			models.Index(fields=['award_key', '-unlocked_at']),
 		]
+
+
+class AchievementCredit(TimeStampedModel):
+	user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='achievement_credits')
+	kind = models.CharField(max_length=40)
+	subject_type = models.CharField(max_length=20)
+	subject_id = models.CharField(max_length=100)
+	occurred_at = models.DateTimeField()
+	metadata = models.JSONField(default=dict)
+
+	class Meta:
+		constraints = [
+			models.UniqueConstraint(fields=['user', 'kind', 'subject_type', 'subject_id'], name='uniq_achievement_credit_subject'),
+		]
+		indexes = [models.Index(fields=['user', 'kind'], name='achievement_user_kind_idx')]
 
 
 class ReferralInvite(TimeStampedModel):

@@ -253,6 +253,8 @@ def _set_last_login(user: User, at: datetime | None = None) -> datetime:
 	codebase uses token auth (Knox) and `authenticate()` directly.
 	"""
 	now = at or timezone.now()
+	from .achievements import record_login_gap
+	record_login_gap(user, now)
 	User.objects.filter(pk=user.pk).update(last_login=now)
 	# Keep in-memory object consistent for the current request.
 	user.last_login = now
@@ -2065,6 +2067,7 @@ class TaskViewSet(CommunityWorkBoundaryMixin, viewsets.ModelViewSet):
 		if task.owner_id != self.request.user.id:
 			raise PermissionDenied('Only the task owner can modify this task.')
 
+	@transaction.atomic
 	def perform_create(self, serializer):
 		user = self.request.user
 		goal = serializer.validated_data.get('goal')
@@ -2087,6 +2090,9 @@ class TaskViewSet(CommunityWorkBoundaryMixin, viewsets.ModelViewSet):
 		effective_partnership = partnership or goal_partnership
 
 		task = serializer.save(owner=user, partnership=effective_partnership)
+		if task.completed or task.status == Task.STATUS_COMPLETED:
+			from .achievements import record_milestone_completion
+			record_milestone_completion(task, user)
 		# Notify partner (if any) about new task
 		if task.partnership:
 			partner = task.partnership.user_a if task.partnership.user_b == user else task.partnership.user_b
@@ -2097,9 +2103,15 @@ class TaskViewSet(CommunityWorkBoundaryMixin, viewsets.ModelViewSet):
 					payload={'task_id': task.id, 'goal_id': task.goal_id, 'title': task.title},
 				)
 
+	@transaction.atomic
 	def perform_update(self, serializer):
+		serializer.instance = Task.objects.select_for_update().get(pk=serializer.instance.pk)
 		self._assert_task_owner(serializer.instance)
-		serializer.save()
+		was_complete = serializer.instance.completed or serializer.instance.status == Task.STATUS_COMPLETED
+		task = serializer.save()
+		if not was_complete and (task.completed or task.status == Task.STATUS_COMPLETED):
+			from .achievements import record_milestone_completion
+			record_milestone_completion(task, self.request.user)
 
 	def perform_destroy(self, instance):
 		self._assert_task_owner(instance)
@@ -2176,8 +2188,9 @@ class TaskViewSet(CommunityWorkBoundaryMixin, viewsets.ModelViewSet):
 		description='Approve a task as partner.'
 	)
 	@action(detail=True, methods=['post'])
+	@transaction.atomic
 	def approve(self, request, pk=None):
-		task = self.get_object()
+		task = Task.objects.select_for_update().get(pk=self.get_object().pk)
 		# Only partner (not owner) can approve
 		if not task.partnership:
 			return Response({'detail': 'Task is not linked to a partnership.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -2187,8 +2200,12 @@ class TaskViewSet(CommunityWorkBoundaryMixin, viewsets.ModelViewSet):
 			return Response({'detail': 'Task must be pending review to approve.'}, status=status.HTTP_400_BAD_REQUEST)
 
 		# Update task status
+		was_complete = task.completed
 		task.status = Task.STATUS_COMPLETED
 		task.save(update_fields=['status', 'updated_at'])
+		if not was_complete:
+			from .achievements import record_milestone_completion
+			record_milestone_completion(task, request.user)
 
 		# Update latest evidence (if any)
 		evidence = task.evidences.order_by('-submitted_at').first()
@@ -2693,6 +2710,8 @@ class GoalCheckinViewSet(viewsets.ModelViewSet):
 			review_status='pending', reviewer=None, reviewed_at=None,
 		)
 		self._award_badge_if_earned(checkin)
+		from .achievements import record_checkin_submission
+		record_checkin_submission(checkin)
 		return checkin
 
 	def _create_checkin_message(self, checkin):
@@ -2819,6 +2838,9 @@ class GoalCheckinViewSet(viewsets.ModelViewSet):
 			message.save(update_fields=['metadata', 'updated_at'])
 			transaction.on_commit(lambda mid=message.pk, cid=message.conversation_id: broadcast_message(mid, cid))
 		audit(request.user, 'checkin_reviewed', checkin, 'Peer confirmation.' if approved else 'Peer requested clarification.')
+		if approved:
+			from .achievements import record_checkin_confirmation
+			record_checkin_confirmation(checkin, request.user)
 		from .community_messaging import notify_checkin_event
 		notify_checkin_event(checkin, request.user, reviewed=True)
 		return Response(self.get_serializer(checkin).data)

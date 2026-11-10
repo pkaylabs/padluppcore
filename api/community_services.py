@@ -320,6 +320,8 @@ def _activate_task(task, user, role='member'):
     membership.save()
     GoalMembership.objects.update_or_create(goal=task.goal, user=user, defaults={'role': role, 'added_by': task.goal.user})
     ConversationMembership.objects.get_or_create(conversation=task.goal.conversation, user=user, defaults={'added_by': task.goal.user})
+    from .achievements import record_pod_enrollment
+    record_pod_enrollment(task)
     return membership
 
 
@@ -532,9 +534,12 @@ def set_task_status(task, actor, status, reason=''):
     task.goal.is_active = task.status == 'active'
     task.goal.status = 'in_progress' if task.status == 'active' else task.status
     task.goal.save(update_fields=['is_active', 'status', 'updated_at'])
-    audit(actor, 'task.' + status, task, reason, metadata={
+    lifecycle_audit = audit(actor, 'task.' + status, task, reason, metadata={
         'previous_status': previous_status, 'checkin_due_dates': [due.isoformat() for due in owed_dates],
     })
+    if status == 'completed':
+        from .achievements import record_pod_completion
+        record_pod_completion(task, actor, previous_status=previous_status, completion_audit=lifecycle_audit)
     notify(task.memberships.filter(state='active').values_list('user_id', flat=True),
            'community_task_status_changed', {'task_id': task.id, 'goal_id': task.goal_id, 'status': task.status, 'reason': reason})
     if task.status == 'active':
@@ -653,6 +658,9 @@ def review_inactive_members(now=None):
                 continue
             scope = {'group': member.group} if isinstance(member, CommunityMembership) else {'task': member.task}
             _, created = CommunityInactivityReview.objects.get_or_create(user=member.user, last_login_at=last_login, **scope)
+            if isinstance(member, CommunityTaskMembership):
+                from .achievements import record_pod_inactivity
+                record_pod_inactivity(member.user, member.task_id, last_login, now)
             if not created:
                 continue
             flagged += 1

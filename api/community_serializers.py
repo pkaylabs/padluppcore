@@ -17,6 +17,7 @@ def user_data(user, request=None):
     if not user:
         return None
     from .awards import AWARD_BY_KEY
+    from .achievements import ACHIEVEMENT_BY_KEY
     avatar = None
     if user and user.avatar:
         try:
@@ -25,10 +26,14 @@ def user_data(user, request=None):
                 avatar = request.build_absolute_uri(avatar)
         except (ValueError, AttributeError):
             pass
-    achievements = [
-        {'id': award.id, 'key': award.award_key, 'name': AWARD_BY_KEY[award.award_key].title}
-        for award in user.awards.all() if award.award_key in AWARD_BY_KEY
-    ]
+    achievements = []
+    for award in user.awards.all():
+        if award.award_key in AWARD_BY_KEY:
+            achievements.append({'id': award.id, 'key': award.award_key,
+                                 'name': AWARD_BY_KEY[award.award_key].title, 'legacy': True})
+        elif award.award_key in ACHIEVEMENT_BY_KEY and award.claimed_at is not None:
+            achievements.append({'id': award.id, 'key': award.award_key,
+                                 'name': ACHIEVEMENT_BY_KEY[award.award_key].name, 'claimed_at': award.claimed_at})
     return {'id': user.id, 'name': user.name, 'avatar': avatar, 'achievements': achievements}
 
 

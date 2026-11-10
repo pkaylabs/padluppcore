@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import timedelta, timezone as datetime_timezone
 import uuid
 
 from django.conf import settings
@@ -34,7 +34,7 @@ from .community_services import (
     enrollment_status, generate_task_cycles, invite_task_users, join_group, join_task,
     leave_group, leave_task, manage_group_member, notify, notify_admin_shortage,
     require_reason, request_task_link_join, resolve_inactivity_review, review_inactive_members, revoke_group_invitation,
-    set_group_status, set_task_status,
+    set_group_status, set_task_status, task_due_dates,
 )
 from .models import ContentReport, Conversation, ConversationMembership, Goal, GoalCheckin, Message, UserBlock
 from .permissions import HasCronSecret
@@ -535,6 +535,7 @@ class CommunityTaskViewSet(viewsets.GenericViewSet):
         serializer = TaskPatchSerializer(data=request.data, context={'request': request, 'task': task})
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        owed_dates = task_due_dates(task, until=timezone.now().astimezone(datetime_timezone.utc).date())
         old_cadence = (task.goal.checkin_frequency, task.custom_interval_days if task.goal.checkin_frequency == 'CUSTOM' else None)
         for field in ('title', 'description', 'checkin_frequency'):
             if field in data:
@@ -559,7 +560,9 @@ class CommunityTaskViewSet(viewsets.GenericViewSet):
             task.goal.checkins.filter(submitted_at__isnull=True, status='pending', scheduled_for__gt=timezone.localdate()).filter(
                 Q(evidence='') | Q(evidence__isnull=True)).delete()
             generate_task_cycles(task)
-        audit(request.user, 'task.settings_changed', task, metadata={'fields': list(data)})
+        audit(request.user, 'task.settings_changed', task, metadata={
+            'fields': list(data), 'checkin_due_dates': [due.isoformat() for due in owed_dates],
+        })
         notify(task.memberships.filter(state='active').values_list('user_id', flat=True),
                'community_task_settings_changed', {'task_id': task.id, 'goal_id': task.goal_id, 'fields': list(data)})
         return Response(self.get_serializer(task).data)
@@ -688,6 +691,9 @@ class CommunityTaskViewSet(viewsets.GenericViewSet):
             raise PermissionDenied()
         task = CommunityTask.objects.select_for_update().get(pk=self.get_object().pk)
         reason = require_reason(request.data.get('reason'))
+        today = timezone.now().astimezone(datetime_timezone.utc).date()
+        previous_target = task.goal.target_date
+        owed_dates = task_due_dates(task, until=today) if task.status == 'active' else []
         if 'member_limit' in request.data:
             limit = serializers.IntegerField(min_value=1, max_value=10000).run_validation(request.data['member_limit'])
             if limit < task.memberships.filter(state='active').count():
@@ -697,11 +703,20 @@ class CommunityTaskViewSet(viewsets.GenericViewSet):
             end = serializers.DateField().run_validation(request.data['target_date'])
             if end < task.goal.start_date:
                 raise ValidationError('The deadline cannot be before the start date.')
+            if previous_target is None or (end > previous_target and previous_target < today):
+                task.checkin_schedule_effective_from = max(task.goal.start_date, today)
             task.goal.target_date = end
             task.goal.save(update_fields=['target_date', 'updated_at'])
         task.limits_approved_by, task.limits_approval_reason = request.user, reason
         task.save()
-        audit(request.user, 'task.limits_approved', task, reason, metadata={'member_limit': task.member_limit, 'target_date': task.goal.target_date.isoformat()})
+        audit(request.user, 'task.limits_approved', task, reason, metadata={
+            'member_limit': task.member_limit, 'target_date': task.goal.target_date.isoformat(),
+            'previous_target_date': previous_target.isoformat() if previous_target else None,
+            'checkin_due_dates': [due.isoformat() for due in owed_dates],
+            'schedule_effective_from': task.checkin_schedule_effective_from.isoformat() if task.checkin_schedule_effective_from else None,
+        })
+        from .achievements import record_pod_enrollment
+        record_pod_enrollment(task)
         return Response(self.get_serializer(task).data)
 
     @action(detail=True, methods=['post'])
