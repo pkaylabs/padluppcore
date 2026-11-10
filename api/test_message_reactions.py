@@ -9,7 +9,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.test import override_settings
 from django.utils import timezone
-from rest_framework.test import APITestCase
+from rest_framework.test import APITestCase, APITransactionTestCase
 
 from .message_models import MessageHidden, MessageReaction
 from .models import Conversation, ConversationMembership, Partnership
@@ -20,8 +20,7 @@ LIKE = '\U0001f44d'
 HEART = '\u2764\ufe0f'
 
 
-@override_settings(**TEST_SETTINGS)
-class MessageReactionTests(CommunityFixtures, APITestCase):
+class MessageReactionFixtures(CommunityFixtures):
     def setUp(self):
         super().setUp()
         direct = Conversation.objects.create()
@@ -68,6 +67,9 @@ class MessageReactionTests(CommunityFixtures, APITestCase):
             list(message.reactions.order_by('pk').values_list('pk', 'emoji', 'user_id')), before,
         )
 
+
+@override_settings(**TEST_SETTINGS)
+class MessageReactionTests(MessageReactionFixtures, APITestCase):
     def test_participants_can_toggle_remove_and_readd_their_own_reaction(self):
         for kind, conversation in self.conversations.items():
             with self.subTest(conversation=kind):
@@ -255,6 +257,17 @@ class MessageReactionTests(CommunityFixtures, APITestCase):
                 removed = self.react(message, HEART)
                 self.assertEqual(removed.status_code, 200, removed.data)
                 self.assert_reactions(removed.data, message, [])
+
+
+@override_settings(**TEST_SETTINGS)
+class MessageReactionBroadcastTests(MessageReactionFixtures, APITransactionTestCase):
+    # Channels closes old connections at async database boundaries. Real commits
+    # avoid closing PostgreSQL's rollback-only APITestCase transaction.
+    def react(self, message, emoji=LIKE, **fields):
+        return self.client.post(
+            f'/api-v1/community/messages/{message.pk}/react/',
+            {'emoji': emoji, **fields}, format='json',
+        )
 
     def test_add_and_remove_broadcast_message_updated_with_fresh_reactions(self):
         layer = get_channel_layer()
